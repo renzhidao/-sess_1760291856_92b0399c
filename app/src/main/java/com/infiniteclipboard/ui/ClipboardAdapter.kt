@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import com.infiniteclipboard.R
 import com.infiniteclipboard.data.ClipboardEntity
 import com.infiniteclipboard.databinding.ItemClipboardBinding
 import java.text.SimpleDateFormat
@@ -54,9 +55,7 @@ class ClipboardAdapter(
 
         fun bind(item: ClipboardEntity, query: String) {
             binding.apply {
-                // 原样显示，保证“文本原样保留”测试
                 tvContent.text = item.content
-                // 如有搜索词，再高亮显示
                 if (query.isNotBlank()) {
                     tvContent.text = buildHighlighted(item.content, query, root.context)
                 }
