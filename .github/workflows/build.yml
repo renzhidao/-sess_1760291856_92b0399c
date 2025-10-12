@@ -32,14 +32,17 @@ jobs:
           yes | sdkmanager --licenses || true
           sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      # 使用 Gradle Build Action，不依赖仓库内的 gradlew 脚本
-      - name: Gradle build (assembleDebug)
-        uses: gradle/gradle-build-action@v3
+      # 关键修复：用 setup-gradle 指定“字符串”版本，且使用有效版本（与 AGP 8.1.0 兼容的 8.2.1）
+      - name: Setup Gradle 8.2.1
+        uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: 8.0
-          arguments: |
-            :app:assembleDebug
-            --stacktrace
+          gradle-version: "8.2.1"
+
+      - name: Verify Gradle
+        run: gradle -v
+
+      - name: Build Debug APK
+        run: gradle :app:assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
