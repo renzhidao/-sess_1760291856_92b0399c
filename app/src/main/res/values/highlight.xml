@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 文件: app/src/main/res/values/highlight.xml -->
+<resources>
+    <!-- 搜索高亮色（浅黄） -->
+    <color name="highlight">#FFF59D</color>
+</resources>

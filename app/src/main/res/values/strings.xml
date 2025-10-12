@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 文件: app/src/main/res/values/strings.xml -->
+<resources>
+    <string name="app_name">无限剪切板</string>
+    <string name="notification_channel_name">剪切板监控</string>
+    <string name="notification_channel_desc">监控系统剪切板变化</string>
+    <string name="notification_title">剪切板服务运行中</string>
+    <string name="notification_content">点击查看剪切板历史</string>
+    <string name="clipboard_empty">剪切板为空</string>
+    <string name="copied_to_clipboard">已复制到剪切板</string>
+    <string name="paste">粘贴</string>
+    <string name="copy">复制</string>
+    <string name="delete">删除</string>
+    <string name="share">分享</string>
+    <string name="clear_all">清空全部</string>
+    <string name="search_hint">搜索剪切板内容...</string>
+    <string name="item_count">共 %d 条</string>
+    <string name="permission_required">需要通知权限</string>
+    <string name="overlay_permission_required">需要悬浮窗权限</string>
+
+    <!-- 通知快捷操作 -->
+    <string name="notification_action_pause">暂停监听</string>
+    <string name="notification_action_resume">继续监听</string>
+    <string name="notification_action_clear_all">清空全部</string>
+    <string name="notification_paused">剪切板监听已暂停</string>
+
+    <!-- 导入导出 -->
+    <string name="action_export">导出</string>
+    <string name="action_import">导入</string>
+    <string name="export_success">导出成功</string>
+    <string name="export_failed">导出失败</string>
+    <string name="import_success">导入完成：%1$d 条</string>
+    <string name="import_failed">导入失败</string>
+</resources>

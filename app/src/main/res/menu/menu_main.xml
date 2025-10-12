@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 文件: app/src/main/res/menu/menu_main.xml -->
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/action_clear_all"
+        android:title="@string/clear_all"
+        android:icon="@drawable/ic_clear_all"
+        android:showAsAction="ifRoom|withText" />
+    <item
+        android:id="@+id/action_export"
+        android:title="@string/action_export"
+        android:icon="@drawable/ic_export"
+        android:showAsAction="never|withText" />
+    <item
+        android:id="@+id/action_import"
+        android:title="@string/action_import"
+        android:icon="@drawable/ic_import"
+        android:showAsAction="never|withText" />
+</menu>
