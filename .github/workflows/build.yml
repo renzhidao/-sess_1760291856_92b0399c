@@ -26,13 +26,17 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Accept Android Licenses
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --update || true
+
       - name: Install Android SDK packages
         shell: bash
         run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" --sdk_root=$ANDROID_SDK_ROOT
 
-      # 关键修复：用 setup-gradle 指定“字符串”版本，且使用有效版本（与 AGP 8.1.0 兼容的 8.2.1）
       - name: Setup Gradle 8.2.1
         uses: gradle/actions/setup-gradle@v3
         with:
