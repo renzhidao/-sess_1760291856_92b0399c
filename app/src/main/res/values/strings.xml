@@ -17,18 +17,29 @@
     <string name="item_count">共 %d 条</string>
     <string name="permission_required">需要通知权限</string>
     <string name="overlay_permission_required">需要悬浮窗权限</string>
+    <string name="confirm">确定</string>
+    <string name="cancel">取消</string>
 
-    <!-- 通知快捷操作 -->
     <string name="notification_action_pause">暂停监听</string>
     <string name="notification_action_resume">继续监听</string>
     <string name="notification_action_clear_all">清空全部</string>
     <string name="notification_paused">剪切板监听已暂停</string>
 
-    <!-- 导入导出 -->
     <string name="action_export">导出</string>
     <string name="action_import">导入</string>
     <string name="export_success">导出成功</string>
     <string name="export_failed">导出失败</string>
     <string name="import_success">导入完成：%1$d 条</string>
     <string name="import_failed">导入失败</string>
+
+    <string name="log_viewer">日志</string>
+    <string name="log_viewer_title">运行日志</string>
+    <string name="log_refresh">刷新</string>
+    <string name="log_copy">复制</string>
+    <string name="log_clear">清空</string>
+    <string name="log_refreshed">日志已刷新</string>
+    <string name="log_copied">日志已复制</string>
+    <string name="log_cleared">日志已清空</string>
+    <string name="log_clear_title">清空日志</string>
+    <string name="log_clear_message">确定要清空所有日志吗？</string>
 </resources>

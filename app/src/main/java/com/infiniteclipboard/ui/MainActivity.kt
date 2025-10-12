@@ -29,6 +29,7 @@ import com.infiniteclipboard.R
 import com.infiniteclipboard.data.ClipboardEntity
 import com.infiniteclipboard.databinding.ActivityMainBinding
 import com.infiniteclipboard.service.ClipboardMonitorService
+import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -60,6 +61,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        LogUtils.init(this)
+        LogUtils.d("MainActivity", "应用启动")
 
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
@@ -113,6 +117,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupButtons() {
         binding.btnClearAll.setOnClickListener { showClearAllDialog() }
+        binding.btnLog.setOnClickListener {
+            startActivity(Intent(this, LogViewerActivity::class.java))
+        }
     }
 
     private fun observeData() {
@@ -215,7 +222,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    // 导出/导入（保持不变）
     private fun exportToUri(uri: Uri) {
         lifecycleScope.launch(Dispatchers.IO) {
             try {

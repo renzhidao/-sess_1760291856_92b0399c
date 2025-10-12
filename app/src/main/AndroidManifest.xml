@@ -34,6 +34,11 @@
             android:launchMode="singleTask"
             android:theme="@style/Theme.ClipboardWindow" />
 
+        <activity
+            android:name=".ui.LogViewerActivity"
+            android:exported="false"
+            android:label="@string/log_viewer_title" />
+
         <service
             android:name=".service.ClipboardMonitorService"
             android:enabled="true"

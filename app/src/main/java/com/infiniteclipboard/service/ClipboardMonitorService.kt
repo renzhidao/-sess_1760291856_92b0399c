@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.ui.ClipboardWindowActivity
+import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,8 +39,9 @@ class ClipboardMonitorService : Service() {
         super.onCreate()
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         createNotificationChannel()
-        clipboardManager.addPrimaryClipChangedListener(clipboardListener)
         startForeground(NOTIFICATION_ID, createNotification())
+        clipboardManager.addPrimaryClipChangedListener(clipboardListener)
+        LogUtils.d("ClipboardService", "服务已启动，监听器已注册")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -47,7 +49,6 @@ class ClipboardMonitorService : Service() {
             ACTION_TOGGLE -> togglePause()
             ACTION_CLEAR_ALL -> clearAll()
         }
-        // 刷新通知显示（暂停/继续）
         updateNotification()
         return START_STICKY
     }
@@ -61,21 +62,41 @@ class ClipboardMonitorService : Service() {
     }
 
     private fun handleClipboardChange() {
-        val clip = clipboardManager.primaryClip ?: return
-        if (clip.itemCount <= 0) return
-        val text = clip.getItemAt(0).text?.toString()
-        if (!text.isNullOrEmpty() && text != lastClipboardContent) {
-            lastClipboardContent = text
-            saveClipboardContent(text)
+        try {
+            val clip = clipboardManager.primaryClip
+            if (clip == null) {
+                LogUtils.d("ClipboardService", "剪切板为空")
+                return
+            }
+            
+            if (clip.itemCount <= 0) {
+                LogUtils.d("ClipboardService", "剪切板项目数为0")
+                return
+            }
+            
+            val text = clip.getItemAt(0).text?.toString()
+            LogUtils.d("ClipboardService", "获取到文本: ${text?.take(50)}")
+            
+            if (!text.isNullOrEmpty()) {
+                if (text != lastClipboardContent) {
+                    lastClipboardContent = text
+                    saveClipboardContent(text)
+                } else {
+                    LogUtils.d("ClipboardService", "重复内容，跳过")
+                }
+            }
+        } catch (e: Exception) {
+            LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
         }
     }
 
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
-                repository.insertItem(content)
+                val id = repository.insertItem(content)
+                LogUtils.d("ClipboardService", "保存成功，ID: $id")
             } catch (e: Exception) {
-                e.printStackTrace()
+                LogUtils.e("ClipboardService", "保存失败", e)
             }
         }
     }
@@ -93,7 +114,6 @@ class ClipboardMonitorService : Service() {
 
     private fun togglePause() {
         isPaused = !isPaused
-        // 无需重复注册/移除监听器，监听器内部已判断 isPaused
     }
 
     private fun createNotificationChannel() {
