@@ -15,7 +15,6 @@ android {
         targetSdk 34
         versionCode 1
         versionName "1.0"
-
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
@@ -26,7 +25,6 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {
-            // 可选：便于调试
             crunchPngs false
         }
     }
@@ -35,13 +33,32 @@ android {
         viewBinding true
     }
 
-    // 关键修复：排除错误合并出来的 Kotlin 源文件
+    // 关键：排除任意 merged_*.kt（双保险）
     sourceSets {
         main {
             java {
-                exclude("**/merged_*.kt")
+                exclude '**/merged_*.kt'
             }
         }
+    }
+
+    // 关键：在编译前清理垃圾合并文件（不改仓库，只清 runner 工作区）
+    // 这样即使 extractor/流程又生成了 merged_*.kt，也会先被删除
+    tasks.register('sanitizeMergedKt') {
+        doLast {
+            def victims = fileTree(dir: "${projectDir}/src", include: ['**/merged_*.kt'])
+            if (!victims.isEmpty()) {
+                println "Sanitizing merged Kotlin placeholders:"
+                victims.files.each { f ->
+                    println " - deleting ${f}"
+                    f.delete()
+                }
+            }
+        }
+    }
+    // 确保在 preBuild 前执行
+    tasks.matching { it.name == "preBuild" }.configureEach {
+        dependsOn 'sanitizeMergedKt'
     }
 
     compileOptions {
@@ -63,11 +80,7 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
-
-    // RecyclerView
     implementation 'androidx.recyclerview:recyclerview:1.3.2'
-
-    // Lifecycle (可选)
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.2'
 
     // Room
