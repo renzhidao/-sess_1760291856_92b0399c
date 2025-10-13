@@ -1,5 +1,6 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardMonitorService.kt
-// ClipboardMonitorService（修复：改为“复制后短时一次性透明层”；只拦轻点；滑动/长按不处理）
+// 前台监控服务 + 屏幕边缘小条（剪切/复制/粘贴）
+// 小条只拦截自身区域的触摸；不影响其他区域的滑动/输入
 package com.infiniteclipboard.service
 
 import android.app.Notification
@@ -10,29 +11,30 @@ import android.app.Service
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
-import android.os.SystemClock
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.ui.ClipboardWindowActivity
-import com.infiniteclipboard.ui.TapRecordActivity
+import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
 
 class ClipboardMonitorService : Service() {
 
@@ -43,11 +45,10 @@ class ClipboardMonitorService : Service() {
     private var lastClipboardContent: String? = null
     private var isPaused: Boolean = false
 
-    // 一次性透明层（复制后短时出现）
+    // 边缘小条
     private lateinit var wm: WindowManager
-    private var overlayView: View? = null
-    private var overlayLp: WindowManager.LayoutParams? = null
-    private var overlayShowing = false
+    private var barView: View? = null
+    private var barLp: WindowManager.LayoutParams? = null
 
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         if (!isPaused) handleClipboardChange()
@@ -61,8 +62,8 @@ class ClipboardMonitorService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
-        prepareOverlay() // 预创建视图（默认不显示）
-        LogUtils.d("ClipboardService", "服务已启动，监听器已注册")
+        ensureEdgeBar()
+        LogUtils.d("ClipboardService", "服务已启动，监听器已注册 + 边缘小条已显示")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -78,32 +79,24 @@ class ClipboardMonitorService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        clipboardManager.removePrimaryClipChangedListener(clipboardListener)
-        removeOverlay(force = true)
+        try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) { }
+        removeEdgeBar()
         serviceScope.cancel()
     }
 
     private fun handleClipboardChange() {
-        try {
-            val clip = clipboardManager.primaryClip
-            if (clip == null || clip.itemCount <= 0) {
-                LogUtils.d("ClipboardService", "剪切板为空")
-                return
-            }
-            val text = clip.getItemAt(0).text?.toString()
-            LogUtils.d("ClipboardService", "获取到文本: ${text?.take(50)}")
-            if (!text.isNullOrEmpty()) {
-                if (text != lastClipboardContent) {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val text = ClipboardUtils.getClipboardTextWithRetries(
+                    this@ClipboardMonitorService, attempts = 4, intervalMs = 120L
+                )
+                if (!text.isNullOrEmpty() && text != lastClipboardContent) {
                     lastClipboardContent = text
-                    saveClipboardContent(text)
-                } else {
-                    LogUtils.d("ClipboardService", "重复内容，跳过")
+                    try { repository.insertItem(text) } catch (_: Throwable) { }
                 }
-                // 复制后：短时显示一次性透明层，等待“下一次轻点”
-                showOverlayOnce()
+            } catch (e: Exception) {
+                LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
             }
-        } catch (e: Exception) {
-            LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
         }
     }
 
@@ -131,132 +124,122 @@ class ClipboardMonitorService : Service() {
 
     private fun togglePause() { isPaused = !isPaused }
 
-    // ========== 一次性透明层（仅拦“轻点”，滑动/长按不处理；出现后点一次即消失） ==========
+    // ========== 边缘小条：仅拦截自身区域触摸，不影响其他区域 ==========
 
-    private fun prepareOverlay() {
-        if (overlayView != null) return
+    private fun dp(v: Float): Int = TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics
+    ).toInt()
+
+    private fun ensureEdgeBar() {
+        if (barView != null) return
+        val width = dp(40f)
         val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
+            width,
+            WindowManager.LayoutParams.WRAP_CONTENT,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else
                 @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
-            // 不获取焦点；仅在显示时接管触控
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+            x = 0
+            y = 0
         }
 
-        val frame = FrameLayout(this).apply {
-            // 极细边框 + 左上角淡水印（默认开；以后可加设置开关）
-            setBackgroundResource(R.drawable.overlay_border)
-            addView(TextView(context).apply {
-                text = "轻触记录"
-                setTextColor(0x55FFFFFF.toInt())
-                textSize = 10f
-                val pad = (8 * resources.displayMetrics.density).toInt()
-                setPadding(pad, pad, pad, pad)
-            }, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT
-            ).apply { gravity = Gravity.TOP or Gravity.START })
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0x33000000) // 半透明背景，避免视觉干扰
+            val pad = dp(4f)
+            setPadding(pad, pad, pad, pad)
 
-            // 只判定“轻点”：移动 < 10dp 且按压 < 220ms
-            val touchSlop = 10f * resources.displayMetrics.density
-            var downX = 0f
-            var downY = 0f
-            var downRawX = 0f
-            var downRawY = 0f
-            var downTime = 0L
-            var moved = false
+            fun makeBtn(label: String): TextView {
+                return TextView(context).apply {
+                    text = label
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
+                    setBackgroundColor(0x55000000)
+                    isClickable = true
+                    isFocusable = false
+                    val params = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        topMargin = dp(6f)
+                    }
+                    layoutParams = params
+                }
+            }
 
-            visibility = View.GONE // 默认不显示
-            setOnTouchListener { _, ev ->
-                when (ev.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        downX = ev.x; downY = ev.y
-                        downRawX = ev.rawX; downRawY = ev.rawY
-                        downTime = SystemClock.uptimeMillis()
-                        moved = false
-                        true // 拦下按，等待判定
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = ev.x - downX
-                        val dy = ev.y - downY
-                        if (hypot(dx.toDouble(), dy.toDouble()) > touchSlop) {
-                            moved = true
+            val btnCut = makeBtn("剪切")
+            val btnCopy = makeBtn("复制")
+            val btnPaste = makeBtn("粘贴")
+
+            addView(btnCut)
+            addView(btnCopy)
+            addView(btnPaste)
+
+            // 拖动小条（只改变垂直位置）
+            setOnTouchListener(object : View.OnTouchListener {
+                var lastY = 0f
+                var downY = 0
+                override fun onTouch(v: View, e: MotionEvent): Boolean {
+                    when (e.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            lastY = e.rawY
+                            downY = lp.y
+                            return false // 不拦截按钮点击
                         }
-                        true
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        val dt = SystemClock.uptimeMillis() - downTime
-                        val isClick = !moved && dt < 220
-                        if (isClick) {
-                            // 轻点：记录 + 透传
-                            handleGlobalTap(downRawX, downRawY)
+                        MotionEvent.ACTION_MOVE -> {
+                            val dy = (e.rawY - lastY).toInt()
+                            lp.y = downY + dy
+                            // 限制在屏幕内
+                            val h = resources.displayMetrics.heightPixels
+                            val viewH = v.height
+                            lp.y = max(-h / 2 + viewH / 2, min(h / 2 - viewH / 2, lp.y))
+                            try { wm.updateViewLayout(container, lp) } catch (_: Throwable) { }
+                            return true
                         }
-                        // 无论轻点还是滑动/长按，点一次即消失（一次性）
-                        removeOverlay(force = false)
-                        true
+                        else -> return false
                     }
-                    else -> true
+                }
+            })
+
+            btnCopy.setOnClickListener {
+                serviceScope.launch(Dispatchers.IO) {
+                    ClipboardAccessibilityService.performCopy()
+                }
+            }
+            btnCut.setOnClickListener {
+                serviceScope.launch(Dispatchers.IO) {
+                    ClipboardAccessibilityService.performCut()
+                }
+            }
+            btnPaste.setOnClickListener {
+                serviceScope.launch(Dispatchers.IO) {
+                    // 取最新一条进行粘贴
+                    val list = try { repository.getAllOnce() } catch (_: Throwable) { emptyList() }
+                    val latest = list.firstOrNull()?.content
+                    ClipboardAccessibilityService.performPaste(latest)
                 }
             }
         }
 
         try {
-            wm.addView(frame, lp)
-            overlayView = frame
-            overlayLp = lp
+            wm.addView(container, lp)
+            barView = container
+            barLp = lp
         } catch (_: Throwable) { }
     }
 
-    private fun showOverlayOnce(timeoutMs: Long = 1500L) {
-        val v = overlayView ?: return
-        if (overlayShowing) return
-        try {
-            v.visibility = View.VISIBLE
-            overlayShowing = true
-            // 超时自动消失（未点的情况）
-            serviceScope.launch(Dispatchers.Main) {
-                delay(timeoutMs)
-                removeOverlay(force = false)
-            }
-        } catch (_: Throwable) { }
-    }
-
-    private fun removeOverlay(force: Boolean) {
-        val v = overlayView ?: return
-        if (!overlayShowing && !force) return
-        try {
-            v.visibility = View.GONE
-        } catch (_: Throwable) { }
-        overlayShowing = false
-    }
-
-    private fun handleGlobalTap(rawX: Float, rawY: Float) {
-        // 1) 先“消失”，避免把我们自己注入的轻点再吃掉
-        removeOverlay(force = false)
-
-        // 2) 启动透明前台 Activity，完成读取并立即关闭（无跳转感）
-        try {
-            val it = Intent(this, TapRecordActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
-            }
-            startActivity(it)
-        } catch (_: Throwable) {}
-
-        // 3) 短延迟：等回到底层后，注入同坐标轻点（透传）
-        serviceScope.launch(Dispatchers.Main) {
-            try {
-                delay(220L)
-                ClipboardAccessibilityService.dispatchTap(rawX, rawY)
-            } catch (_: Throwable) { }
-        }
+    private fun removeEdgeBar() {
+        val v = barView ?: return
+        try { wm.removeViewImmediate(v) } catch (_: Throwable) { }
+        barView = null
+        barLp = null
     }
 
     // ========== 通知 ==========

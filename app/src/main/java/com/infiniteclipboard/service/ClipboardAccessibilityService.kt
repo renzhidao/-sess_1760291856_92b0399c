@@ -1,13 +1,14 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardAccessibilityService.kt
+// 无障碍服务：监听变化入库 + 提供复制/剪切/粘贴动作给边缘小条调用
 package com.infiniteclipboard.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
-import android.accessibilityservice.GestureDescription
 import android.content.ClipboardManager
 import android.content.Context
-import android.graphics.Path
+import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
@@ -75,6 +76,8 @@ class ClipboardAccessibilityService : AccessibilityService() {
                 if (!text.isNullOrEmpty() && text != lastClipboardContent) {
                     lastClipboardContent = text
                     try { repository.insertItem(text) } catch (_: Throwable) { }
+                    // 确保前台服务常驻（双通道监听）
+                    ClipboardMonitorService.start(applicationContext)
                 }
             } catch (e: Exception) {
                 LogUtils.e("AccessibilityService", "处理剪切板失败", e)
@@ -86,15 +89,70 @@ class ClipboardAccessibilityService : AccessibilityService() {
         @Volatile
         private var instanceRef: WeakReference<ClipboardAccessibilityService>? = null
 
-        // 对外：注入一次轻点（屏幕绝对坐标）
-        fun dispatchTap(x: Float, y: Float): Boolean {
+        // 查找当前焦点可编辑节点
+        private fun focusedEditableNode(svc: AccessibilityService?): AccessibilityNodeInfo? {
+            val root = svc?.rootInActiveWindow ?: return null
+            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return null
+            return if (focused.isEditable || (focused.className?.toString()?.contains("EditText", true) == true)) focused else focused
+        }
+
+        // 复制：有选区则复制，无选区则尝试全选后复制
+        fun performCopy(): Boolean {
             val svc = instanceRef?.get() ?: return false
+            val node = focusedEditableNode(svc) ?: return false
             return try {
-                val path = Path().apply { moveTo(x, y) }
-                val gesture = GestureDescription.Builder()
-                    .addStroke(GestureDescription.StrokeDescription(path, 0, 50))
-                    .build()
-                svc.dispatchGesture(gesture, null, null)
+                // 先尝试复制
+                if (node.performAction(AccessibilityNodeInfo.ACTION_COPY)) return true
+                // 无选区则尝试全选
+                selectAll(node)
+                node.performAction(AccessibilityNodeInfo.ACTION_COPY)
+            } catch (_: Throwable) { false }
+        }
+
+        // 剪切：有选区则剪切，无选区全选后剪切；不支持时置空
+        fun performCut(): Boolean {
+            val svc = instanceRef?.get() ?: return false
+            val node = focusedEditableNode(svc) ?: return false
+            return try {
+                if (node.performAction(AccessibilityNodeInfo.ACTION_CUT)) return true
+                selectAll(node)
+                if (node.performAction(AccessibilityNodeInfo.ACTION_CUT)) return true
+                // 置空文本兜底（部分控件支持）
+                setText(node, "")
+            } catch (_: Throwable) { false }
+        }
+
+        // 粘贴：优先 ACTION_PASTE；不支持则直接设置文本
+        fun performPaste(text: String?): Boolean {
+            val svc = instanceRef?.get() ?: return false
+            val node = focusedEditableNode(svc) ?: return false
+            return try {
+                if (!text.isNullOrEmpty()) {
+                    ClipboardUtils.setClipboardText(svc, text)
+                }
+                if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) return true
+                // 直接设置文本（会替换全部）
+                if (!text.isNullOrEmpty()) setText(node, text) else false
+            } catch (_: Throwable) { false }
+        }
+
+        private fun selectAll(node: AccessibilityNodeInfo): Boolean {
+            return try {
+                val args = Bundle().apply {
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
+                    // 粗暴使用大值，部分实现会自动裁剪到末尾
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, Int.MAX_VALUE)
+                }
+                node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args)
+            } catch (_: Throwable) { false }
+        }
+
+        private fun setText(node: AccessibilityNodeInfo, text: String): Boolean {
+            return try {
+                val args = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                }
+                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
             } catch (_: Throwable) { false }
         }
     }
