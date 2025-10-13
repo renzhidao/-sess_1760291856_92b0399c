@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/ui/TestProbeActivity.kt
-// 测试探针页：一键开始 -> 多路探测剪贴板变化（监听/轮询/瞬时前台）直到命中，显示命中路径
+// 测试探针页：点击“开始探测”后，按序尝试多种读取方案，立刻给出成功/失败与命中方法
 package com.infiniteclipboard.ui
 
 import android.content.ClipboardManager
@@ -9,36 +9,17 @@ import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.infiniteclipboard.databinding.ActivityTestProbeBinding
-import com.infiniteclipboard.service.ClipboardMonitorService
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class TestProbeActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityTestProbeBinding
     private lateinit var cm: ClipboardManager
-
-    private var baseline: String? = null
-    private var changedText: String? = null
-
-    private var listenerHit = false
-    private var pollHit = false
-    private var frontHit = false
-
-    private var running = false
-    private var probeJob: Job? = null
-
-    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
-        listenerHit = true
-        lifecycleScope.launch(Dispatchers.IO) {
-            val now = ClipboardUtils.getClipboardTextRobust(this@TestProbeActivity)
-            if (!now.isNullOrEmpty() && now != baseline) {
-                changedText = now
-            }
-        }
-        logLine("监听器触发: OnPrimaryClipChanged")
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,117 +29,104 @@ class TestProbeActivity : AppCompatActivity() {
         supportActionBar?.title = "剪贴板探针"
         cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
-        binding.btnStart.setOnClickListener { startProbe() }
-        binding.btnStop.setOnClickListener { stopProbe() }
-
-        // 确保前台服务常驻（避免进程被杀影响探测）
-        ClipboardMonitorService.start(this)
+        binding.btnStart.setOnClickListener { runProbe() }
+        binding.btnStop.setOnClickListener { finish() }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        stopProbe()
-    }
-
-    private fun startProbe() {
-        if (running) return
-        running = true
+    private fun runProbe() {
         binding.tvResult.text = ""
-        baseline = ClipboardUtils.getClipboardTextRobust(this)
-        changedText = null
-        listenerHit = false
-        pollHit = false
-        frontHit = false
+        log("开始探测：请确保已在系统剪贴板复制好要测试的内容")
 
-        logLine("基线文本: ${baseline?.take(80)}")
-        try { cm.addPrimaryClipChangedListener(clipListener) } catch (_: Throwable) { }
+        lifecycleScope.launch(Dispatchers.IO) {
+            var hitMethod: String? = null
+            var got: String? = null
 
-        // 同时启用：轮询 + 定期瞬时前台采集
-        probeJob = lifecycleScope.launch(Dispatchers.IO) {
-            val startTs = System.currentTimeMillis()
-            var lastFrontAt = 0L
-
-            while (running) {
-                // 轮询检测
-                val now = ClipboardUtils.getClipboardTextRobust(this@TestProbeActivity)
-                if (!now.isNullOrEmpty() && now != baseline) {
-                    pollHit = true
-                    changedText = now
-                }
-
-                // 周期性（每800ms）触发一次瞬时前台读取（若尚未命中）
-                val nowTs = System.currentTimeMillis()
-                if (changedText == null && nowTs - lastFrontAt >= 800L) {
-                    try {
-                        val it = Intent(this@TestProbeActivity, TapRecordActivity::class.java)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                        withContext(Dispatchers.Main) { startActivity(it) }
-                        // 等待采集完成
-                        delay(260L)
-                        val fr = ClipboardUtils.getClipboardTextRobust(this@TestProbeActivity)
-                        if (!fr.isNullOrEmpty() && fr != baseline) {
-                            frontHit = true
-                            changedText = fr
-                        }
-                    } catch (_: Throwable) { }
-                    lastFrontAt = nowTs
-                }
-
-                // 终止条件：任一路命中变化
-                if (!changedText.isNullOrEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        showResult()
-                    }
-                    break
-                }
-
-                // 超时保护（30秒）
-                if (nowTs - startTs > 30_000L) {
-                    withContext(Dispatchers.Main) {
-                        logLine("超时未检测到变更，请确认目标App是否写入系统剪贴板")
-                        showResult(timeout = true)
-                    }
-                    break
-                }
-
-                delay(150L)
+            // 方法1：直接读取（ClipboardManager + coerceToText）
+            val direct = try {
+                val clip = cm.primaryClip
+                val txt = if (clip != null && clip.itemCount > 0)
+                    clip.getItemAt(0).coerceToText(this@TestProbeActivity)?.toString()
+                else null
+                txt
+            } catch (e: Throwable) {
+                null
+            }
+            if (!direct.isNullOrEmpty()) {
+                hitMethod = "直接读取"
+                got = direct
+                log("方法1 命中：直接读取")
+            } else {
+                log("方法1 失败：直接读取为空/异常")
             }
 
-            stopProbe()
+            // 方法2：鲁棒读取（coerceToText + 多item合并）
+            if (hitMethod == null) {
+                val robust = try { ClipboardUtils.getClipboardTextRobust(this@TestProbeActivity) } catch (_: Throwable) { null }
+                if (!robust.isNullOrEmpty()) {
+                    hitMethod = "鲁棒读取"
+                    got = robust
+                    log("方法2 命中：鲁棒读取")
+                } else {
+                    log("方法2 失败：鲁棒读取为空/异常")
+                }
+            }
+
+            // 方法3：短延迟重试读取
+            if (hitMethod == null) {
+                val retry = try { ClipboardUtils.getClipboardTextWithRetries(this@TestProbeActivity, attempts = 4, intervalMs = 120L) } catch (_: Throwable) { null }
+                if (!retry.isNullOrEmpty()) {
+                    hitMethod = "重试读取"
+                    got = retry
+                    log("方法3 命中：重试读取")
+                } else {
+                    log("方法3 失败：重试读取为空/异常")
+                }
+            }
+
+            // 方法4：瞬时前台读取（拉起透明页，读取后立即关闭）
+            if (hitMethod == null) {
+                try {
+                    withContext(Dispatchers.Main) {
+                        val it = Intent(this@TestProbeActivity, TapRecordActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                        startActivity(it)
+                    }
+                    delay(280L) // 等待透明页完成读取窗口
+                    val front = try { ClipboardUtils.getClipboardTextRobust(this@TestProbeActivity) } catch (_: Throwable) { null }
+                    if (!front.isNullOrEmpty()) {
+                        hitMethod = "瞬时前台"
+                        got = front
+                        log("方法4 命中：瞬时前台")
+                    } else {
+                        log("方法4 失败：瞬时前台读取为空/异常")
+                    }
+                } catch (e: Throwable) {
+                    log("方法4 异常：${e.message ?: e.javaClass.simpleName}")
+                }
+            }
+
+            // 汇总结果
+            withContext(Dispatchers.Main) {
+                val sb = StringBuilder()
+                if (hitMethod != null) {
+                    sb.append("结果：成功\n\n")
+                    sb.append("命中方法：").append(hitMethod).append("\n\n")
+                    sb.append("内容（前80字符）：\n").append(got?.take(80) ?: "(空)").append("\n")
+                } else {
+                    sb.append("结果：失败\n\n")
+                    sb.append("所有方法均未获取到剪贴板内容。\n")
+                }
+                binding.tvResult.text = sb.toString()
+                LogUtils.d("TestProbe", sb.toString())
+            }
         }
-
-        logLine("开始探测：请在目标App执行复制/剪切，然后返回查看结果")
     }
 
-    private fun stopProbe() {
-        running = false
-        try { cm.removePrimaryClipChangedListener(clipListener) } catch (_: Throwable) { }
-        probeJob?.cancel()
-        probeJob = null
-    }
-
-    private fun showResult(timeout: Boolean = false) {
-        val sb = StringBuilder()
-        if (timeout) sb.append("结果：超时（未检测到变化）\n\n")
-        else sb.append("结果：已检测到剪贴板变化\n\n")
-
-        sb.append("命中路径：\n")
-        sb.append(" - 监听器 OnPrimaryClipChanged: ").append(if (listenerHit) "是" else "否").append("\n")
-        sb.append(" - 轮询读取 Poll: ").append(if (pollHit) "是" else "否").append("\n")
-        sb.append(" - 瞬时前台 Front: ").append(if (frontHit) "是" else "否").append("\n\n")
-
-        sb.append("变化内容（前80字符）：\n")
-        val txt = changedText ?: "(空)"
-        sb.append(txt.take(80)).append("\n")
-
-        binding.tvResult.text = sb.toString()
-        LogUtils.d("TestProbe", sb.toString())
-    }
-
-    private fun logLine(line: String) {
+    private fun log(msg: String) {
+        val line = msg
+        LogUtils.d("TestProbe", line)
         val old = binding.tvResult.text?.toString().orEmpty()
         val cur = if (old.isEmpty()) line else old + "\n" + line
         binding.tvResult.text = cur
-        LogUtils.d("TestProbe", line)
     }
 }
