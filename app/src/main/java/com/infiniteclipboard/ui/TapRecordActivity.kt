@@ -1,5 +1,6 @@
 // 文件: app/src/main/java/com/infiniteclipboard/ui/TapRecordActivity.kt
-// TapRecordActivity - 瞬时前台透明页（前台读取后立刻关闭）
+// 瞬时前台透明页（前台读取后立刻关闭）
+// 若工程已有该类且逻辑相同，可忽略本文件；此处确保存在、便于探针调用
 package com.infiniteclipboard.ui
 
 import android.os.Bundle
@@ -12,12 +13,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class TapRecordActivity : AppCompatActivity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         overridePendingTransition(0, 0)
         super.onCreate(savedInstanceState)
     }
-
     override fun onResume() {
         super.onResume()
         lifecycleScope.launch(Dispatchers.IO) {
