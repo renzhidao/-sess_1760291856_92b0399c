@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// Shizuku 全局剪贴板监听（shell 权限）：cmd clipboard monitor + cmd clipboard get
+// Shizuku 全局剪贴板监听（shell 权限）：通过反射调用 newProcess，避免 API 可见性变化导致编译错误
 package com.infiniteclipboard.service
 
 import android.content.Context
@@ -47,25 +47,31 @@ object ShizukuClipboardMonitor {
             while (isActive) {
                 try {
                     val cmd = arrayOf("sh", "-c", "cmd clipboard monitor")
-                    monitorProc = Shizuku.newProcess(cmd, null, null)
-                    val reader = BufferedReader(InputStreamReader(monitorProc!!.inputStream))
-                    LogUtils.d("ShizukuMonitor", "启动 monitor 进程成功")
-                    var line: String?
-                    while (isActive && reader.readLine().also { line = it } != null) {
-                        if (line.isNullOrBlank()) continue
-                        LogUtils.d("ShizukuMonitor", "监测到变化: $line")
-                        val text = tryGetClipboardText()
-                        if (!text.isNullOrBlank()) {
-                            try {
-                                val repo = (appCtx as ClipboardApplication).repository
-                                repo.insertItem(text)
-                                LogUtils.d("ShizukuMonitor", "入库成功，内容前50: ${text.take(50)}")
-                            } catch (e: Throwable) {
-                                LogUtils.e("ShizukuMonitor", "入库失败", e)
+                    val proc = newProcessCompat(cmd)
+                    if (proc == null) {
+                        LogUtils.e("ShizukuMonitor", "无法启动 monitor 进程（反射失败）")
+                    } else {
+                        monitorProc = proc
+                        BufferedReader(InputStreamReader(proc.inputStream)).use { reader ->
+                            LogUtils.d("ShizukuMonitor", "启动 monitor 进程成功")
+                            while (isActive) {
+                                val line = reader.readLine() ?: break
+                                if (line.isBlank()) continue
+                                LogUtils.d("ShizukuMonitor", "监测到变化: $line")
+                                val text = tryGetClipboardText()
+                                if (!text.isNullOrBlank()) {
+                                    try {
+                                        val repo = (appCtx as ClipboardApplication).repository
+                                        repo.insertItem(text)
+                                        LogUtils.d("ShizukuMonitor", "入库成功，内容前50: ${text.take(50)}")
+                                    } catch (e: Throwable) {
+                                        LogUtils.e("ShizukuMonitor", "入库失败", e)
+                                    }
+                                }
                             }
                         }
+                        LogUtils.d("ShizukuMonitor", "monitor 进程结束")
                     }
-                    LogUtils.d("ShizukuMonitor", "monitor 进程结束")
                 } catch (e: Throwable) {
                     LogUtils.e("ShizukuMonitor", "monitor 异常", e)
                 } finally {
@@ -90,17 +96,35 @@ object ShizukuClipboardMonitor {
 
     private fun tryGetClipboardText(): String? {
         return try {
-            val p = Shizuku.newProcess(arrayOf("sh", "-c", "cmd clipboard get"), null, null)
-            val reader = BufferedReader(InputStreamReader(p.inputStream))
-            val sb = StringBuilder()
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                sb.append(line).append('\n')
+            val p = newProcessCompat(arrayOf("sh", "-c", "cmd clipboard get")) ?: return null
+            BufferedReader(InputStreamReader(p.inputStream)).use { reader ->
+                val sb = StringBuilder()
+                while (true) {
+                    val ln = reader.readLine() ?: break
+                    sb.append(ln).append('\n')
+                }
+                val out = sb.toString().trim()
+                if (out.isEmpty() || out == "null") null else out
             }
-            val out = sb.toString().trim()
-            if (out.isEmpty() || out == "null") null else out
         } catch (e: Throwable) {
             LogUtils.e("ShizukuMonitor", "get 失败", e)
+            null
+        }
+    }
+
+    // 兼容 API 变动：通过反射调用 Shizuku.newProcess(String[], String[]?, String?)
+    private fun newProcessCompat(cmd: Array<String>): Process? {
+        return try {
+            val method = Shizuku::class.java.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            method.isAccessible = true
+            method.invoke(null, cmd, null, null) as? Process
+        } catch (t: Throwable) {
+            LogUtils.e("ShizukuMonitor", "newProcess 反射失败", t)
             null
         }
     }
