@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// Shizuku 全局剪贴板监听（shell 权限）：更强日志 + 多用户/输出兼容 + 心跳自检
+// Shizuku 全局剪贴板监听（shell 权限）：更强日志 + 多用户/输出兼容 + 心跳自检（修复编译：去除内联lambda中的continue、在协程体内调用挂起函数）
 package com.infiniteclipboard.service
 
 import android.content.Context
@@ -13,7 +13,6 @@ import kotlinx.coroutines.*
 import rikka.shizuku.Shizuku
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.nio.charset.Charset
 import java.util.concurrent.atomic.AtomicLong
 
 object ShizukuClipboardMonitor {
@@ -122,34 +121,8 @@ object ShizukuClipboardMonitor {
                     val stdoutReader = BufferedReader(InputStreamReader(p.inputStream, Charsets.UTF_8))
                     val stderrReader = BufferedReader(InputStreamReader(p.errorStream, Charsets.UTF_8))
 
-                    val readLoop = { src: String, br: BufferedReader ->
-                        try {
-                            while (isActive) {
-                                val ln = br.readLine() ?: break
-                                if (ln.isBlank()) continue
-                                lastMonitorLineAt.set(System.currentTimeMillis())
-                                LogUtils.d(TAG, "[$src] 变化线索: ${snippet(ln)}")
-                                // 每次线索出现都读取一次内容（多策略）
-                                val text = tryGetClipboardTextCandidatesWithLog()
-                                if (!text.isNullOrBlank()) {
-                                    try {
-                                        val repo = (appCtx as ClipboardApplication).repository
-                                        val id = repo.insertItem(text)
-                                        LogUtils.d(TAG, "入库成功 id=$id, 内容前50: ${snippet(text, 50)}")
-                                    } catch (e: Throwable) {
-                                        LogUtils.e(TAG, "入库失败", e)
-                                    }
-                                } else {
-                                    LogUtils.d(TAG, "get 返回空（可能无主剪贴板/非文本）")
-                                }
-                            }
-                        } catch (t: Throwable) {
-                            LogUtils.e(TAG, "读取 $src 出错", t)
-                        }
-                    }
-
-                    val j1 = launch { readLoop("stdout", stdoutReader) }
-                    val j2 = launch { readLoop("stderr", stderrReader) }
+                    val j1 = launch { readLoop(appCtx, "stdout", stdoutReader) }
+                    val j2 = launch { readLoop(appCtx, "stderr", stderrReader) }
 
                     // 启动心跳：持续汇报“是否没有任何事件”
                     heartbeatJob?.cancel()
@@ -164,7 +137,7 @@ object ShizukuClipboardMonitor {
                             )
                             // 若 monitor 长时间静默，做一次“仅日志”的兜底探测（不入库）
                             if (since > 5000) {
-                                val probe = tryGetClipboardTextCandidatesWithLog(logPrefix = "fallback-probe", insert = false)
+                                val probe = tryGetClipboardTextCandidatesWithLog(logPrefix = "fallback-probe")
                                 LogUtils.d(TAG, "fallback-probe 结果: ${snippet(probe, 80)}")
                             }
                         }
@@ -197,17 +170,45 @@ object ShizukuClipboardMonitor {
         LogUtils.d(TAG, "停止 monitor")
     }
 
-    // 读取剪贴板文本：尝试多种命令与解析，并输出详细日志；可选择是否入库调用场景
+    // 持续读取一侧流；每次检测到线索就尝试获取文本并入库（挂起函数：允许调用仓库的挂起API）
+    private suspend fun readLoop(appCtx: Context, src: String, br: BufferedReader) {
+        try {
+            while (currentCoroutineContext().isActive) {
+                val ln = br.readLine() ?: break
+                if (ln.isBlank()) continue
+                lastMonitorLineAt.set(System.currentTimeMillis())
+                LogUtils.d(TAG, "[$src] 变化线索: ${snippet(ln)}")
+
+                // 每次线索出现都读取一次内容（多策略）
+                val text = tryGetClipboardTextCandidatesWithLog()
+                if (!text.isNullOrBlank()) {
+                    try {
+                        val repo = (appCtx as ClipboardApplication).repository
+                        val id = repo.insertItem(text) // OK：在挂起函数体内调用
+                        LogUtils.d(TAG, "入库成功 id=$id, 内容前50: ${snippet(text, 50)}")
+                    } catch (e: Throwable) {
+                        LogUtils.e(TAG, "入库失败", e)
+                    }
+                } else {
+                    LogUtils.d(TAG, "get 返回空（可能无主剪贴板/非文本）")
+                }
+            }
+        } catch (t: Throwable) {
+            LogUtils.e(TAG, "读取 $src 出错", t)
+        }
+    }
+
+    // 读取剪贴板文本：尝试多种命令与解析，并输出详细日志
     private fun tryGetClipboardTextCandidatesWithLog(
-        logPrefix: String = "get",
-        insert: Boolean = true // 当前仅用于日志，插入由调用方决定
+        logPrefix: String = "get"
     ): String? {
         val attempts = listOf(
             "cmd clipboard get --user 0",
             "cmd clipboard get"
         )
         for (cmd in attempts) {
-            val raw = runShellOnce(cmd) ?: run {
+            val raw = runShellOnce(cmd)
+            if (raw.isNullOrBlank()) {
                 LogUtils.d(TAG, "$logPrefix: $cmd 无输出或执行失败")
                 continue
             }
@@ -217,11 +218,6 @@ object ShizukuClipboardMonitor {
             if (!parsed.isNullOrBlank()) return parsed
         }
         return null
-    }
-
-    // 原 tryGetClipboardText，保留但改为走多策略（向后兼容）
-    private fun tryGetClipboardText(): String? {
-        return tryGetClipboardTextCandidatesWithLog()
     }
 
     // 解析 cmd clipboard get 输出为纯文本
@@ -235,7 +231,6 @@ object ShizukuClipboardMonitor {
         val tIdx = s.indexOf(" T:")
         if (tIdx >= 0) {
             val start = tIdx + 3
-            // 截到右大括号/末尾
             val end = s.indexOf('}', start).let { if (it >= 0) it else s.length }
             val payload = s.substring(start, end).trim()
             if (payload.isNotEmpty()) return payload
