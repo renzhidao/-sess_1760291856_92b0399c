@@ -17,15 +17,14 @@
     <string name="item_count">共 %d 条</string>
     <string name="permission_required">需要通知权限</string>
     <string name="overlay_permission_required">需要悬浮窗权限</string>
-    <string name="confirm">确定</string>
-    <string name="cancel">取消</string>
-    <string name="go_settings">去设置</string>
 
+    <!-- 通知快捷操作 -->
     <string name="notification_action_pause">暂停监听</string>
     <string name="notification_action_resume">继续监听</string>
     <string name="notification_action_clear_all">清空全部</string>
     <string name="notification_paused">剪切板监听已暂停</string>
 
+    <!-- 导入导出 -->
     <string name="action_export">导出</string>
     <string name="action_import">导入</string>
     <string name="export_success">导出成功</string>
@@ -33,6 +32,7 @@
     <string name="import_success">导入完成：%1$d 条</string>
     <string name="import_failed">导入失败</string>
 
+    <!-- 日志页 -->
     <string name="log_viewer">日志</string>
     <string name="log_viewer_title">运行日志</string>
     <string name="log_refresh">刷新</string>
@@ -44,7 +44,21 @@
     <string name="log_clear_title">清空日志</string>
     <string name="log_clear_message">确定要清空所有日志吗？</string>
 
+    <!-- 通用 -->
+    <string name="confirm">确定</string>
+    <string name="cancel">取消</string>
+    <string name="go_settings">去设置</string>
+
+    <!-- 无障碍 -->
     <string name="accessibility_permission_title">需要辅助功能权限</string>
-    <string name="accessibility_permission_message">为了在后台监听剪切板，需要开启辅助功能权限。\n\n请在设置中找到"无限剪切板"并开启。</string>
+    <string name="accessibility_permission_message">为了在后台监听剪切板，需要开启辅助功能权限。\n\n请在设置中找到“无限剪切板”并开启。</string>
     <string name="accessibility_service_description">用于监听系统剪切板变化，自动保存复制的内容。不会收集任何隐私信息。</string>
+
+    <!-- 代理键盘（修复缺失资源） -->
+    <string name="ime_proxy_name">剪切板代理键盘</string>
+    <string name="ime_subtype_label">代理</string>
+    <string name="ime_switch_now">切换</string>
+    <string name="set_proxy_keyboard">设置中转键盘</string>
+    <string name="pick_keyboard_title">选择要中转的键盘</string>
+    <string name="proxy_keyboard_saved">已设置为：%1$s</string>
 </resources>

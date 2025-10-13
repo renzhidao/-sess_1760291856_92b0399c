@@ -55,7 +55,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
         super.onDestroy()
         try {
             clipboardManager.removePrimaryClipChangedListener(clipboardListener)
-        } catch (_: Throwable) {}
+        } catch (_: Throwable) { }
         serviceScope.cancel()
         LogUtils.d("AccessibilityService", "服务已销毁")
     }

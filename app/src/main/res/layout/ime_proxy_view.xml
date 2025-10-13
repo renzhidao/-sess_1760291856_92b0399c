@@ -5,7 +5,6 @@
     android:layout_height="40dp"
     android:background="@android:color/transparent">
 
-    <!-- 极简条，自动尝试转发；必要时可点一下切换 -->
     <Button
         android:id="@+id/btnSwitchNow"
         android:layout_width="wrap_content"
