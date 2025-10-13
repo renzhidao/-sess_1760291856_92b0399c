@@ -47,3 +47,4 @@
     <string name="accessibility_permission_title">需要辅助功能权限</string>
     <string name="accessibility_permission_message">为了在后台监听剪切板，需要开启辅助功能权限。\n\n请在设置中找到"无限剪切板"并开启。</string>
     <string name="accessibility_service_description">用于监听系统剪切板变化，自动保存复制的内容。不会收集任何隐私信息。</string>
+</resources>
