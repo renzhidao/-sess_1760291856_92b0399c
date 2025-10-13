@@ -1,3 +1,4 @@
+<!-- 文件: app/src/main/AndroidManifest.xml -->
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 文件: app/src/main/AndroidManifest.xml -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -74,6 +75,15 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- Shizuku Provider（保护：仅系统持有者可跨用户访问） -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <!-- 已移除：中转键盘 ProxyImeService -->
         <!-- 已移除：任何“测试探针”入口（按钮/Activity菜单） -->

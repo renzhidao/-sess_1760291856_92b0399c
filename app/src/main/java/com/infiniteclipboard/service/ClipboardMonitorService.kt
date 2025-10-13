@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardMonitorService.kt
-// 前台监控服务 + 屏幕边缘小条（剪切/复制/粘贴）+ 通知点击直接展示悬浮小窗
+// 前台监控服务 + 屏幕边缘小条（剪切/复制/粘贴）+ 悬浮列表窗口（可滑动、可管理、非跳转）
 package com.infiniteclipboard.service
 
 import android.app.Notification
@@ -28,14 +28,7 @@ import com.infiniteclipboard.ui.ClipboardAdapter
 import com.infiniteclipboard.ui.TapRecordActivity
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 
 class ClipboardMonitorService : Service() {
 
@@ -51,7 +44,7 @@ class ClipboardMonitorService : Service() {
     private lateinit var wm: WindowManager
     private var barView: View? = null
 
-    // 悬浮小窗
+    // 悬浮小窗（可滑动列表）
     private var overlayView: View? = null
     private var overlayJob: Job? = null
 
@@ -68,12 +61,10 @@ class ClipboardMonitorService : Service() {
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
 
-        // 仅在开启时显示小条
         if (prefs.getBoolean("edge_bar_enabled", false)) {
             ensureEdgeBar()
         }
 
-        // 启动 Shizuku 监听（若开启且可用）
         val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
         if (enableShizuku) ShizukuClipboardMonitor.start(this)
 
@@ -106,7 +97,6 @@ class ClipboardMonitorService : Service() {
         serviceScope.cancel()
     }
 
-    // 外部应用写入：可选择触发瞬时前台采集；自家写入（带标签）跳过
     private fun handleClipboardChange() {
         try {
             val clip = clipboardManager.primaryClip
@@ -127,7 +117,7 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 测试要求的方法保留（供单元测试检测到关键字）
+    // 测试要求的方法保留
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -152,45 +142,47 @@ class ClipboardMonitorService : Service() {
 
     private fun togglePause() { isPaused = !isPaused }
 
-    // ========== 悬浮小窗 ==========
-
+    // ========== 悬浮小窗：可滑动、紧凑卡片、不可跳转 ==========
     private fun showClipboardOverlay() {
         if (overlayView != null) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             LogUtils.d("ClipboardService", "无悬浮窗权限，无法显示悬浮小窗")
             return
         }
-        // 修复与 Intent.type 冲突：避免使用变量名 type
         val wmType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
 
         val screenW = resources.displayMetrics.widthPixels
-        val desiredW = (screenW * 0.9f).toInt() // 90% 屏宽，观感更佳
+        val screenH = resources.displayMetrics.heightPixels
+        val widthRatio = prefs.getFloat("overlay_width_ratio", 0.65f).coerceIn(0.5f, 0.85f)
+        val desiredW = (screenW * widthRatio).toInt()
+        val maxHeight = (screenH * 0.55f).toInt() // 最大高度占屏 55%
 
         val lp = WindowManager.LayoutParams(
             desiredW,
             WindowManager.LayoutParams.WRAP_CONTENT,
             wmType,
-            // 可点击、可滚动；窗口外触摸不拦截
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = dp(48f)
+            gravity = Gravity.TOP or Gravity.START
+            x = prefs.getInt("overlay_pos_x", (screenW - desiredW) / 2)
+            y = prefs.getInt("overlay_pos_y", dp(64f))
         }
 
-        val themedContext = ContextThemeWrapper(this, R.style.Theme_InfiniteClipboard)
+        val themedContext = android.view.ContextThemeWrapper(this, R.style.Theme_InfiniteClipboard)
         val v = LayoutInflater.from(themedContext).inflate(R.layout.activity_clipboard_window, null, false)
 
-        val rv = v.findViewById<RecyclerView>(R.id.recyclerView)
+        // 使列表区域更紧凑，限制总高度
+        val rv = v.findViewById<RecyclerView>(R.id.recyclerView).apply {
+            setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
+            clipToPadding = false
+            layoutParams = layoutParams?.apply { height = maxHeight } ?: ViewGroup.LayoutParams(desiredW, maxHeight)
+        }
         val close = v.findViewById<View>(R.id.btnClose)
-
-        // 更紧凑的列表体验
-        rv.setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
-        rv.clipToPadding = false
 
         val adapter = ClipboardAdapter(
             onCopyClick = { item ->
@@ -200,10 +192,11 @@ class ClipboardMonitorService : Service() {
                 serviceScope.launch(Dispatchers.IO) { repository.deleteItem(item) }
             },
             onItemClick = { item ->
+                // 点击条目仅复制，不跳转
                 ClipboardUtils.setClipboardText(this, item.content)
-                hideClipboardOverlay()
             },
             onShareClick = { item ->
+                // 允许分享（不跳主界面）
                 try {
                     val sendIntent = Intent(Intent.ACTION_SEND).apply {
                         this.type = "text/plain"
@@ -217,7 +210,42 @@ class ClipboardMonitorService : Service() {
         rv.layoutManager = LinearLayoutManager(themedContext)
         rv.adapter = adapter
 
+        // 关闭仅收起悬浮窗
         close.setOnClickListener { hideClipboardOverlay() }
+
+        // 拖动悬浮窗并记忆位置
+        v.setOnTouchListener(object : View.OnTouchListener {
+            var downX = 0f
+            var downY = 0f
+            var startX = 0
+            var startY = 0
+            override fun onTouch(view: View, event: MotionEvent): Boolean {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = event.rawX
+                        downY = event.rawY
+                        startX = lp.x
+                        startY = lp.y
+                        return true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = (event.rawX - downX).toInt()
+                        val dy = (event.rawY - downY).toInt()
+                        lp.x = (startX + dx).coerceIn(0, screenW - desiredW)
+                        // 预估高度，避免拖出屏幕
+                        val viewH = view.height.coerceAtLeast(maxHeight / 2)
+                        lp.y = (startY + dy).coerceIn(0, screenH - viewH)
+                        try { wm.updateViewLayout(view, lp) } catch (_: Throwable) {}
+                        return true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        prefs.edit().putInt("overlay_pos_x", lp.x).putInt("overlay_pos_y", lp.y).apply()
+                        return true
+                    }
+                }
+                return false
+            }
+        })
 
         overlayJob = serviceScope.launch {
             repository.allItems.collectLatest { items ->
@@ -250,7 +278,6 @@ class ClipboardMonitorService : Service() {
     }
 
     // ========== 边缘小条：仅拦截自身区域触摸，不影响其他区域 ==========
-
     private fun dp(v: Float): Int = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics
     ).toInt()
@@ -305,9 +332,7 @@ class ClipboardMonitorService : Service() {
             val btnCopy = makeBtn("复制")
             val btnPaste = makeBtn("粘贴")
 
-            addView(btnCut)
-            addView(btnCopy)
-            addView(btnPaste)
+            addView(btnCut); addView(btnCopy); addView(btnPaste)
 
             setOnTouchListener(object : View.OnTouchListener {
                 var lastY = 0f
@@ -370,7 +395,6 @@ class ClipboardMonitorService : Service() {
     }
 
     // ========== 通知 ==========
-
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -387,7 +411,7 @@ class ClipboardMonitorService : Service() {
     }
 
     private fun createNotification(): Notification {
-        // 点击通知直接展示悬浮小窗（不再先打开 Activity）
+        // 点击通知直接展示/收起悬浮小窗（不打开 Activity）
         val openIntent = Intent(this, ClipboardMonitorService::class.java).apply {
             action = ACTION_SHOW_WINDOW
         }

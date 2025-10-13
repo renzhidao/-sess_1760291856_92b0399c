@@ -35,7 +35,6 @@ object ShizukuClipboardMonitor {
             binderReady = false
             LogUtils.d("ShizukuMonitor", "Binder dead")
         }
-        // 权限结果回调（兜底自动开启）
         Shizuku.addRequestPermissionResultListener { _, grantResult ->
             val granted = grantResult == PackageManager.PERMISSION_GRANTED
             LogUtils.d("ShizukuMonitor", "permission result: $granted")
@@ -51,15 +50,12 @@ object ShizukuClipboardMonitor {
         return try { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (_: Throwable) { false }
     }
 
-    // 保证在主线程触发请求；若 Binder 未就绪则等待收到后再请求
+    // 在主线程发起权限请求；若 Binder 未就绪，将等待 Binder 收到后再请求
     fun ensurePermission(context: Context, onResult: (Boolean) -> Unit) {
         if (hasPermission()) {
-            onResult(true)
-            return
+            onResult(true); return
         }
         val post = { Shizuku.requestPermission(REQ_CODE) }
-        val deliver: (Boolean) -> Unit = { onResult(it) }
-
         if (isAvailable()) {
             Handler(Looper.getMainLooper()).post { post() }
         } else {
@@ -70,10 +66,8 @@ object ShizukuClipboardMonitor {
                 }
             })
         }
-        // 同步回调在 addRequestPermissionResultListener 中（init 已注册）
-        // 若用户拒绝，回调 deliver(false) 由外层根据 hasPermission() 复查
         Handler(Looper.getMainLooper()).postDelayed({
-            deliver(hasPermission())
+            onResult(hasPermission())
         }, 1200L)
     }
 
@@ -148,7 +142,7 @@ object ShizukuClipboardMonitor {
             }
         } catch (e: Throwable) {
             LogUtils.e("ShizukuMonitor", "get 失败", e)
-            return null
+            null
         }
     }
 
