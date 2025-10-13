@@ -29,6 +29,7 @@ import com.infiniteclipboard.ui.TapRecordActivity
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collectLatest
 
 class ClipboardMonitorService : Service() {
 
