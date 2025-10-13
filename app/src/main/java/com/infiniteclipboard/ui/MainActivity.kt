@@ -200,26 +200,30 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!Settings.canDrawOverlays(this)) {
-                showOverlayPermissionDialog()
-            }
+        
+        checkAccessibilityPermission()
+    }
+
+    private fun checkAccessibilityPermission() {
+        if (!isAccessibilityServiceEnabled()) {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.accessibility_permission_title)
+                .setMessage(R.string.accessibility_permission_message)
+                .setPositiveButton(R.string.go_settings) { _, _ ->
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                }
+                .setNegativeButton(R.string.cancel, null)
+                .show()
         }
     }
 
-    private fun showOverlayPermissionDialog() {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.overlay_permission_required)
-            .setMessage("需要悬浮窗权限以显示剪切板窗口")
-            .setPositiveButton("去设置") { _, _ ->
-                val intent = Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName")
-                )
-                startActivity(intent)
-            }
-            .setNegativeButton("取消", null)
-            .show()
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val serviceName = "${packageName}/.service.ClipboardAccessibilityService"
+        val enabledServices = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        )
+        return enabledServices?.contains(serviceName) == true
     }
 
     private fun exportToUri(uri: Uri) {
