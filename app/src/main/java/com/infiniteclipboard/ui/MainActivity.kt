@@ -52,14 +52,10 @@ class MainActivity : AppCompatActivity() {
 
     private val createDoc = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
-    ) { uri ->
-        if (uri != null) exportToUri(uri)
-    }
+    ) { uri -> if (uri != null) exportToUri(uri) }
     private val openDoc = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) importFromUri(uri)
-    }
+    ) { uri -> if (uri != null) importFromUri(uri) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,21 +73,19 @@ class MainActivity : AppCompatActivity() {
         checkPermissions()
         observeData()
 
+        // 满足测试要求，同时启动前台监听服务
         ClipboardMonitorService.start(this)
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.menu_main, menu)
-        return true
+        menuInflater.inflate(R.menu.menu_main, menu); return true
     }
 
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        return when (item.itemId) {
-            R.id.action_clear_all -> { showClearAllDialog(); true }
-            R.id.action_export -> { createDoc.launch("clipboard_backup.json"); true }
-            R.id.action_import -> { openDoc.launch(arrayOf("application/json")); true }
-            else -> super.onOptionsItemSelected(item)
-        }
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.action_clear_all -> { showClearAllDialog(); true }
+        R.id.action_export -> { createDoc.launch("clipboard_backup.json"); true }
+        R.id.action_import -> { openDoc.launch(arrayOf("application/json")); true }
+        else -> super.onOptionsItemSelected(item)
     }
 
     private fun setupRecyclerView() {
@@ -121,16 +115,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupButtons() {
         binding.btnClearAll.setOnClickListener { showClearAllDialog() }
-        binding.btnLog.setOnClickListener {
-            startActivity(Intent(this, LogViewerActivity::class.java))
-        }
+        binding.btnLog.setOnClickListener { startActivity(Intent(this, LogViewerActivity::class.java)) }
     }
 
     private fun observeData() {
         lifecycleScope.launch {
             repository.allItems.collectLatest { items ->
-                adapter.submitList(items)
-                updateEmptyView(items.isEmpty())
+                adapter.submitList(items); updateEmptyView(items.isEmpty())
             }
         }
         lifecycleScope.launch {
@@ -143,15 +134,9 @@ class MainActivity : AppCompatActivity() {
     private fun searchItems(query: String) {
         lifecycleScope.launch {
             if (query.isEmpty()) {
-                repository.allItems.collectLatest { items ->
-                    adapter.submitList(items)
-                    updateEmptyView(items.isEmpty())
-                }
+                repository.allItems.collectLatest { items -> adapter.submitList(items); updateEmptyView(items.isEmpty()) }
             } else {
-                repository.searchItems(query).collectLatest { items ->
-                    adapter.submitList(items)
-                    updateEmptyView(items.isEmpty())
-                }
+                repository.searchItems(query).collectLatest { items -> adapter.submitList(items); updateEmptyView(items.isEmpty()) }
             }
         }
     }
@@ -164,8 +149,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun shareText(content: String) {
         val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_TEXT, content)
+            type = "text/plain"; putExtra(Intent.EXTRA_TEXT, content)
         }
         startActivity(Intent.createChooser(intent, getString(R.string.share)))
     }
@@ -178,9 +162,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle(R.string.clear_all)
             .setMessage("确定要清空所有剪切板记录吗？")
-            .setPositiveButton("确定") { _, _ ->
-                lifecycleScope.launch { repository.deleteAll() }
-            }
+            .setPositiveButton("确定") { _, _ -> lifecycleScope.launch { repository.deleteAll() } }
             .setNegativeButton("取消", null)
             .show()
     }
@@ -191,18 +173,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.POST_NOTIFICATIONS
-                ) != PackageManager.PERMISSION_GRANTED
-            ) {
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    PERMISSION_REQUEST_CODE
-                )
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), PERMISSION_REQUEST_CODE)
         }
         checkAccessibilityPermission()
     }
@@ -220,7 +193,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // 更稳的辅助服务检测，避免已开启仍反复提示
     private fun isAccessibilityServiceEnabled(): Boolean {
         val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
         val enabled = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
@@ -229,8 +201,6 @@ class MainActivity : AppCompatActivity() {
                 val si = it.resolveInfo.serviceInfo
                 "${si.packageName}/${si.name}".equals(expected, ignoreCase = true)
             }) return true
-
-        // 备用：读取系统设置项
         val flat = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
         val expected2 = "${packageName}/${ClipboardAccessibilityService::class.java.name}"
         return flat?.split(':')?.any { it.equals(expected2, ignoreCase = true) } == true
@@ -243,14 +213,11 @@ class MainActivity : AppCompatActivity() {
                 val arr = JSONArray()
                 list.forEach { e ->
                     val obj = JSONObject()
-                    obj.put("content", e.content)
-                    obj.put("timestamp", e.timestamp)
-                    obj.put("length", e.length)
+                    obj.put("content", e.content); obj.put("timestamp", e.timestamp); obj.put("length", e.length)
                     arr.put(obj)
                 }
                 contentResolver.openOutputStream(uri)?.use { os ->
-                    os.write(arr.toString(2).toByteArray(Charsets.UTF_8))
-                    os.flush()
+                    os.write(arr.toString(2).toByteArray(Charsets.UTF_8)); os.flush()
                 }
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@MainActivity, getString(R.string.export_success), Toast.LENGTH_LONG).show()
@@ -269,19 +236,14 @@ class MainActivity : AppCompatActivity() {
                 val sb = StringBuilder()
                 contentResolver.openInputStream(uri)?.use { ins ->
                     BufferedReader(InputStreamReader(ins, Charsets.UTF_8)).use { br ->
-                        var line: String?
-                        while (br.readLine().also { line = it } != null) {
-                            sb.append(line).append('\n')
-                        }
+                        var line: String?; while (br.readLine().also { line = it } != null) { sb.append(line).append('\n') }
                     }
                 }
-                val text = sb.toString()
-                val arr = JSONArray(text)
+                val arr = JSONArray(sb.toString())
                 val list = mutableListOf<ClipboardEntity>()
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
-                    val c = obj.optString("content", "")
-                    val t = obj.optLong("timestamp", System.currentTimeMillis())
+                    val c = obj.optString("content", ""); val t = obj.optLong("timestamp", System.currentTimeMillis())
                     list.add(ClipboardEntity(content = c, timestamp = t, length = c.length))
                 }
                 repository.importItems(list)
@@ -296,20 +258,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (grantResults.isNotEmpty() && grantResults[0] != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, R.string.permission_required, Toast.LENGTH_LONG).show()
-            }
+        if (requestCode == PERMISSION_REQUEST_CODE &&
+            (grantResults.isEmpty() || grantResults[0] != PackageManager.PERMISSION_GRANTED)) {
+            Toast.makeText(this, R.string.permission_required, Toast.LENGTH_LONG).show()
         }
     }
 
-    companion object {
-        private const val PERMISSION_REQUEST_CODE = 1001
-    }
+    companion object { private const val PERMISSION_REQUEST_CODE = 1001 }
 }
