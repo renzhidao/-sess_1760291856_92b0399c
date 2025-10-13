@@ -24,12 +24,18 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
-import com.infiniteclipboard.data.ClipboardEntity
 import com.infiniteclipboard.ui.ClipboardAdapter
 import com.infiniteclipboard.ui.TapRecordActivity
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class ClipboardMonitorService : Service() {
 
@@ -438,4 +444,8 @@ class ClipboardMonitorService : Service() {
         }
 
         fun stop(context: Context) {
-            val intent 
+            val intent = Intent(context, ClipboardMonitorService::class.java)
+            context.stopService(intent)
+        }
+    }
+}
