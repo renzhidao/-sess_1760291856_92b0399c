@@ -1,49 +1,59 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// Shizuku 全局剪贴板监听（shell 权限）：更强日志 + 多用户/输出兼容 + 心跳自检（修复编译：去除内联lambda中的continue、在协程体内调用挂起函数）
+// Shizuku 全局剪贴板监听（Binder 版，替代 cmd）：通过 IClipboard 轮询读取，ROM 无需支持 `cmd clipboard`
+// 特性：
+// - 仅在 Shizuku 已连接且已授权时运行
+// - 反射绑定 IClipboard 并调用 getPrimaryClip(…)，兼容多签名 (String,int)/(String)/()
+// - 解析 ClipData 为纯文本；内容变更才入库
+// - 心跳日志；自动重试与 Binder 重新获取
 package com.infiniteclipboard.service
 
+import android.content.ClipData
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 import rikka.shizuku.Shizuku
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import rikka.shizuku.system.server.SystemServiceHelper
+import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicLong
 
 object ShizukuClipboardMonitor {
 
     private const val TAG = "ShizukuMonitor"
+    private const val SERVICE = "clipboard"
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    @Volatile private var monitorJob: Job? = null
+    @Volatile private var pollJob: Job? = null
     @Volatile private var heartbeatJob: Job? = null
-    @Volatile private var monitorProc: Process? = null
-    @Volatile private var binderReady: Boolean = false
 
-    // 监控行日志的最后时间，用于判断“事件没到”
-    private val lastMonitorLineAt = AtomicLong(0L)
+    // IClipboard 代理 & 反射方法缓存
+    @Volatile private var iClipboard: Any? = null
+    @Volatile private var methodGetPrimaryClip: Method? = null
+    // 0: getPrimaryClip(), 1: getPrimaryClip(String), 2: getPrimaryClip(String, int)
+    @Volatile private var methodSigType: Int = -1
+
+    // 最近一次变更的摘要（用于去重）
+    private val lastTextHash = AtomicLong(0L)
+    private val lastPollAt = AtomicLong(0L)
 
     private const val REQ_CODE = 10086
 
     fun init(context: Context) {
-        binderReady = safePing()
+        val binderReady = safePing()
         LogUtils.d(TAG, "init: binderReady=$binderReady sdk=${Build.VERSION.SDK_INT}")
-
         Shizuku.addBinderReceivedListener {
-            binderReady = true
             LogUtils.d(TAG, "Binder received")
-            val enabled = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-                .getBoolean("shizuku_enabled", false)
-            if (enabled) start(context)
+            if (hasPermission()) start(context)
         }
         Shizuku.addBinderDeadListener {
-            binderReady = false
             LogUtils.d(TAG, "Binder dead")
+            stop()
         }
         Shizuku.addRequestPermissionResultListener { _, grantResult ->
             val granted = grantResult == PackageManager.PERMISSION_GRANTED
@@ -53,18 +63,12 @@ object ShizukuClipboardMonitor {
     }
 
     private fun safePing(): Boolean = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
+    private fun isAvailable(): Boolean = safePing()
+    fun hasPermission(): Boolean = try { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (_: Throwable) { false }
 
-    fun isAvailable(): Boolean = binderReady || safePing()
-
-    fun hasPermission(): Boolean {
-        return try { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (_: Throwable) { false }
-    }
-
-    // 在主线程发起权限请求；若 Binder 未就绪，将等待 Binder 收到后再请求
+    // 主线程请求权限
     fun ensurePermission(context: Context, onResult: (Boolean) -> Unit) {
-        if (hasPermission()) {
-            onResult(true); return
-        }
+        if (hasPermission()) { onResult(true); return }
         val post = { Shizuku.requestPermission(REQ_CODE) }
         if (isAvailable()) {
             Handler(Looper.getMainLooper()).post { post() }
@@ -76,212 +80,189 @@ object ShizukuClipboardMonitor {
                 }
             })
         }
-        Handler(Looper.getMainLooper()).postDelayed({
-            onResult(hasPermission())
-        }, 1200L)
+        Handler(Looper.getMainLooper()).postDelayed({ onResult(hasPermission()) }, 1200L)
     }
 
     fun start(context: Context) {
         val avail = isAvailable()
         val perm = hasPermission()
-        LogUtils.d(TAG, "start(): available=$avail permission=$perm jobActive=${monitorJob?.isActive==true}")
+        LogUtils.d(TAG, "start(): available=$avail permission=$perm jobActive=${pollJob?.isActive==true}")
         if (!avail || !perm) {
             LogUtils.d(TAG, "不可用或未授权，start 跳过")
             return
         }
-        if (monitorJob != null) {
+        if (pollJob != null) {
             LogUtils.d(TAG, "已在运行，跳过")
             return
         }
 
         val appCtx = context.applicationContext
-        monitorJob = scope.launch {
-            var attempt = 0
+
+        pollJob = scope.launch {
+            // 尝试绑定 IClipboard 并解析方法签名（失败会反复重试）
+            ensureIClipboardBound(appCtx)
+
+            // 心跳
+            heartbeatJob?.cancel()
+            heartbeatJob = launch {
+                while (isActive) {
+                    delay(2000)
+                    val since = System.currentTimeMillis() - lastPollAt.get()
+                    LogUtils.d(TAG, "heartbeat: lastPoll=${since}ms iCb=${iClipboard!=null} sig=$methodSigType perm=${hasPermission()} job=${pollJob?.isActive==true}")
+                }
+            }
+
+            // 轮询读取（轻量，避免占用过多）
+            val PKG = appCtx.packageName
+            var userIdCache: Int? = null
+
             while (isActive) {
+                lastPollAt.set(System.currentTimeMillis())
                 try {
-                    // 优先尝试指定 user，再回退
-                    val monitorCandidates = listOf(
-                        "cmd clipboard monitor --user 0",
-                        "cmd clipboard monitor"
-                    )
-                    var proc: Process? = null
-                    var usedCmd: String? = null
-                    for (cmdStr in monitorCandidates) {
-                        LogUtils.d(TAG, "尝试启动 monitor: $cmdStr")
-                        proc = newProcessCompat(arrayOf("sh", "-c", cmdStr))
-                        if (proc != null) { usedCmd = cmdStr; break }
-                        LogUtils.d(TAG, "newProcess 失败: $cmdStr")
+                    var proxy = iClipboard
+                    var m = methodGetPrimaryClip
+                    if (proxy == null || m == null) {
+                        ensureIClipboardBound(appCtx)
+                        proxy = iClipboard
+                        m = methodGetPrimaryClip
                     }
-                    val p = proc ?: throw IllegalStateException("newProcess 返回 null（monitor）")
-                    monitorProc = p
-                    lastMonitorLineAt.set(System.currentTimeMillis())
-                    LogUtils.d(TAG, "monitor 启动成功，cmd=[$usedCmd]")
 
-                    // 并行读取 stdout/stderr 的行，任何一侧有输出都认作“变化线索”
-                    val stdoutReader = BufferedReader(InputStreamReader(p.inputStream, Charsets.UTF_8))
-                    val stderrReader = BufferedReader(InputStreamReader(p.errorStream, Charsets.UTF_8))
+                    val clipData = if (proxy != null && m != null) {
+                        when (methodSigType) {
+                            2 -> {
+                                val uid = userIdCache ?: (getMyUserIdOrNull() ?: 0).also { userIdCache = it }
+                                m.invoke(proxy, PKG, uid) as? ClipData
+                            }
+                            1 -> m.invoke(proxy, PKG) as? ClipData
+                            0 -> m.invoke(proxy) as? ClipData
+                            else -> null
+                        }
+                    } else null
 
-                    val j1 = launch { readLoop(appCtx, "stdout", stdoutReader) }
-                    val j2 = launch { readLoop(appCtx, "stderr", stderrReader) }
-
-                    // 启动心跳：持续汇报“是否没有任何事件”
-                    heartbeatJob?.cancel()
-                    heartbeatJob = launch {
-                        while (isActive) {
-                            delay(2000)
-                            val since = System.currentTimeMillis() - lastMonitorLineAt.get()
-                            val alive = monitorProc != null
-                            LogUtils.d(
-                                TAG,
-                                "heartbeat: silent=${since}ms alive=$alive binderReady=$binderReady avail=${isAvailable()} perm=${hasPermission()} job=${monitorJob?.isActive==true}"
-                            )
-                            // 若 monitor 长时间静默，做一次“仅日志”的兜底探测（不入库）
-                            if (since > 5000) {
-                                val probe = tryGetClipboardTextCandidatesWithLog(logPrefix = "fallback-probe")
-                                LogUtils.d(TAG, "fallback-probe 结果: ${snippet(probe, 80)}")
+                    val text = clipDataToText(appCtx, clipData)
+                    if (!text.isNullOrEmpty()) {
+                        val h = text.hashCode().toLong()
+                        if (h != lastTextHash.get()) {
+                            lastTextHash.set(h)
+                            try {
+                                val repo = (appCtx as ClipboardApplication).repository
+                                val id = repo.insertItem(text)
+                                LogUtils.d(TAG, "Binder入库成功 id=$id, 内容前50: ${snippet(text, 50)}")
+                            } catch (e: Throwable) {
+                                LogUtils.e(TAG, "Binder入库失败", e)
                             }
                         }
                     }
-
-                    // 等待读取结束
-                    j1.join(); j2.join()
-                    LogUtils.d(TAG, "monitor 进程结束（读取循环退出）")
-                } catch (e: Throwable) {
-                    LogUtils.e(TAG, "monitor 异常", e)
-                } finally {
-                    try { monitorProc?.destroy() } catch (_: Throwable) { }
-                    monitorProc = null
+                } catch (t: Throwable) {
+                    // 若出现反射/安全异常，下次循环会重绑
+                    LogUtils.e(TAG, "binder 轮询失败", t)
+                    // 清空缓存以触发重试
+                    iClipboard = null
+                    methodGetPrimaryClip = null
+                    methodSigType = -1
+                    delay(600) // 短暂退避
                 }
-                attempt++
-                val backoff = (500L * attempt).coerceAtMost(5000L)
-                delay(backoff)
+
+                delay(350) // 轮询间隔（可按需调整）
             }
         }
     }
 
     fun stop() {
         LogUtils.d(TAG, "stop()")
-        try { monitorProc?.destroy() } catch (_: Throwable) { }
-        monitorProc = null
-        monitorJob?.cancel()
-        monitorJob = null
+        pollJob?.cancel()
+        pollJob = null
         heartbeatJob?.cancel()
         heartbeatJob = null
-        LogUtils.d(TAG, "停止 monitor")
+        iClipboard = null
+        methodGetPrimaryClip = null
+        methodSigType = -1
     }
 
-    // 持续读取一侧流；每次检测到线索就尝试获取文本并入库（挂起函数：允许调用仓库的挂起API）
-    private suspend fun readLoop(appCtx: Context, src: String, br: BufferedReader) {
+    // 绑定 IClipboard 并解析 getPrimaryClip 方法签名
+    private fun ensureIClipboardBound(context: Context) {
+        if (iClipboard != null && methodGetPrimaryClip != null && methodSigType >= 0) return
         try {
-            while (currentCoroutineContext().isActive) {
-                val ln = br.readLine() ?: break
-                if (ln.isBlank()) continue
-                lastMonitorLineAt.set(System.currentTimeMillis())
-                LogUtils.d(TAG, "[$src] 变化线索: ${snippet(ln)}")
-
-                // 每次线索出现都读取一次内容（多策略）
-                val text = tryGetClipboardTextCandidatesWithLog()
-                if (!text.isNullOrBlank()) {
-                    try {
-                        val repo = (appCtx as ClipboardApplication).repository
-                        val id = repo.insertItem(text) // OK：在挂起函数体内调用
-                        LogUtils.d(TAG, "入库成功 id=$id, 内容前50: ${snippet(text, 50)}")
-                    } catch (e: Throwable) {
-                        LogUtils.e(TAG, "入库失败", e)
-                    }
-                } else {
-                    LogUtils.d(TAG, "get 返回空（可能无主剪贴板/非文本）")
-                }
+            val binder = SystemServiceHelper.getSystemService(SERVICE) as? IBinder
+            if (binder == null) {
+                LogUtils.d(TAG, "SystemServiceHelper.getSystemService($SERVICE) 返回 null")
+                return
             }
-        } catch (t: Throwable) {
-            LogUtils.e(TAG, "读取 $src 出错", t)
-        }
-    }
-
-    // 读取剪贴板文本：尝试多种命令与解析，并输出详细日志
-    private fun tryGetClipboardTextCandidatesWithLog(
-        logPrefix: String = "get"
-    ): String? {
-        val attempts = listOf(
-            "cmd clipboard get --user 0",
-            "cmd clipboard get"
-        )
-        for (cmd in attempts) {
-            val raw = runShellOnce(cmd)
-            if (raw.isNullOrBlank()) {
-                LogUtils.d(TAG, "$logPrefix: $cmd 无输出或执行失败")
-                continue
+            val stubClazz = Class.forName("android.content.IClipboard\$Stub")
+            val asInterface = stubClazz.getMethod("asInterface", IBinder::class.java)
+            val proxy = asInterface.invoke(null, binder) ?: run {
+                LogUtils.d(TAG, "IClipboard.asInterface 返回 null")
+                return
             }
-            LogUtils.d(TAG, "$logPrefix: $cmd 原始: ${snippet(raw)}")
-            val parsed = parseGetOutput(raw)
-            LogUtils.d(TAG, "$logPrefix: $cmd 解析: ${snippet(parsed)}")
-            if (!parsed.isNullOrBlank()) return parsed
-        }
-        return null
-    }
+            iClipboard = proxy
+            // 尝试方法签名：2参(String,int) → 1参(String) → 0参()
+            val clazz = proxy.javaClass
+            var m: Method? = null
+            var sig = -1
 
-    // 解析 cmd clipboard get 输出为纯文本
-    private fun parseGetOutput(out: String?): String? {
-        if (out.isNullOrBlank()) return null
-        val s = out.trim()
-        if (s.equals("null", true)) return null
-        if (s.contains("No primary clip", true)) return null
-        if (s.contains("Warning:", true)) return null
-        // 常见格式：ClipData { text/plain T:xxx }
-        val tIdx = s.indexOf(" T:")
-        if (tIdx >= 0) {
-            val start = tIdx + 3
-            val end = s.indexOf('}', start).let { if (it >= 0) it else s.length }
-            val payload = s.substring(start, end).trim()
-            if (payload.isNotEmpty()) return payload
-        }
-        return s
-    }
-
-    // 单次执行 shell 并返回 stdout 全文（UTF-8）
-    private fun runShellOnce(cmd: String): String? {
-        return try {
-            val p = newProcessCompat(arrayOf("sh", "-c", cmd)) ?: return null
-            val out = BufferedReader(InputStreamReader(p.inputStream, Charsets.UTF_8)).use { br ->
-                val sb = StringBuilder()
-                var line: String?
-                while (true) {
-                    line = br.readLine() ?: break
-                    sb.append(line).append('\n')
-                }
-                sb.toString().trim()
-            }
-            // 读一下错误流，避免阻塞（只截断日志）
+            // 2参
             try {
-                val err = BufferedReader(InputStreamReader(p.errorStream, Charsets.UTF_8)).use { it.readLine() }
-                if (!err.isNullOrBlank()) LogUtils.d(TAG, "shell err: ${snippet(err)}")
-            } catch (_: Throwable) { }
-            try { p.destroy() } catch (_: Throwable) { }
-            out
-        } catch (e: Throwable) {
-            LogUtils.e(TAG, "runShellOnce 失败: $cmd", e)
-            null
+                m = clazz.getMethod("getPrimaryClip", String::class.java, Int::class.javaPrimitiveType)
+                sig = 2
+            } catch (_: NoSuchMethodException) { }
+            // 1参
+            if (m == null) {
+                try {
+                    m = clazz.getMethod("getPrimaryClip", String::class.java)
+                    sig = 1
+                } catch (_: NoSuchMethodException) { }
+            }
+            // 0参
+            if (m == null) {
+                try {
+                    m = clazz.getMethod("getPrimaryClip")
+                    sig = 0
+                } catch (_: NoSuchMethodException) { }
+            }
+
+            if (m == null) {
+                LogUtils.d(TAG, "未找到 getPrimaryClip 方法，proxy=${clazz.name}")
+                iClipboard = null
+                return
+            }
+
+            methodGetPrimaryClip = m
+            methodSigType = sig
+            LogUtils.d(TAG, "IClipboard 绑定成功，签名类型=$sig 方法=$m")
+        } catch (t: Throwable) {
+            LogUtils.e(TAG, "绑定 IClipboard 失败", t)
+            iClipboard = null
+            methodGetPrimaryClip = null
+            methodSigType = -1
         }
     }
 
-    // 兼容 API 变动：通过反射调用 Shizuku.newProcess(String[], String[]?, String?)
-    private fun newProcessCompat(cmd: Array<String>): Process? {
-        return try {
-            val method = Shizuku::class.java.getDeclaredMethod(
-                "newProcess",
-                Array<String>::class.java,
-                Array<String>::class.java,
-                String::class.java
-            )
-            method.isAccessible = true
-            val p = method.invoke(null, cmd, null, null) as? Process
-            if (p == null) LogUtils.d(TAG, "newProcess 返回 null, cmd=${cmd.joinToString(" ")}")
-            p
-        } catch (t: Throwable) {
-            LogUtils.e(TAG, "newProcess 反射失败, cmd=${cmd.joinToString(" ")}", t)
-            null
+    // ClipData → 纯文本
+    private fun clipDataToText(context: Context, clip: ClipData?): String? {
+        if (clip == null || clip.itemCount <= 0) return null
+        val sb = StringBuilder()
+        for (i in 0 until clip.itemCount) {
+            val item = clip.getItemAt(i)
+            val coerced = try { item.coerceToText(context)?.toString() } catch (_: Throwable) { null }
+            val piece = when {
+                !coerced.isNullOrBlank() -> coerced
+                item.text != null -> item.text.toString()
+                else -> null
+            }
+            if (!piece.isNullOrBlank()) {
+                if (sb.isNotEmpty()) sb.append('\n')
+                sb.append(piece)
+            }
         }
+        val out = sb.toString().trim()
+        return if (out.isEmpty()) null else out
     }
+
+    private fun getMyUserIdOrNull(): Int? = try {
+        val uh = Class.forName("android.os.UserHandle")
+        val m = uh.getMethod("myUserId")
+        (m.invoke(null) as? Int)
+    } catch (_: Throwable) { null }
 
     private fun snippet(s: String?, max: Int = 120): String {
         if (s == null) return "null"
