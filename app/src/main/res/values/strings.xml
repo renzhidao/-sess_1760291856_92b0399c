@@ -54,11 +54,16 @@
     <string name="accessibility_permission_message">为了在后台监听剪切板，需要开启辅助功能权限。\n\n请在设置中找到“无限剪切板”并开启。</string>
     <string name="accessibility_service_description">用于监听系统剪切板变化，自动保存复制的内容。不会收集任何隐私信息。</string>
 
-    <!-- 代理键盘（修复缺失资源） -->
+    <!-- 代理键盘 -->
     <string name="ime_proxy_name">剪切板代理键盘</string>
     <string name="ime_subtype_label">代理</string>
     <string name="ime_switch_now">切换</string>
     <string name="set_proxy_keyboard">设置中转键盘</string>
     <string name="pick_keyboard_title">选择要中转的键盘</string>
     <string name="proxy_keyboard_saved">已设置为：%1$s</string>
+
+    <!-- 快捷应用（供代理键盘唤起时直接打开） -->
+    <string name="set_quick_app">设置快捷应用</string>
+    <string name="pick_quick_app_title">选择快捷应用</string>
+    <string name="quick_app_saved">已设置快捷应用：%1$s</string>
 </resources>
