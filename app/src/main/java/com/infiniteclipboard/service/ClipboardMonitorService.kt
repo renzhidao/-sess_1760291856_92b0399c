@@ -132,7 +132,7 @@ class ClipboardMonitorService : Service() {
 
     private fun ensureEdgeBar() {
         if (barView != null) return
-        val width = dp(40f)
+        val width = dp(48f)
         val lp = WindowManager.LayoutParams(
             width,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -151,7 +151,7 @@ class ClipboardMonitorService : Service() {
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0x33000000) // 半透明背景
+            setBackgroundColor(0x33000000)
             val pad = dp(4f)
             setPadding(pad, pad, pad, pad)
 
@@ -167,9 +167,7 @@ class ClipboardMonitorService : Service() {
                     val params = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply {
-                        topMargin = dp(6f)
-                    }
+                    ).apply { topMargin = dp(6f) }
                     layoutParams = params
                 }
             }
@@ -182,50 +180,51 @@ class ClipboardMonitorService : Service() {
             addView(btnCopy)
             addView(btnPaste)
 
-            // 拖动小条（只改变垂直位置）
+            // 拖动小条（只改变垂直位置）。返回 false 以便子按钮正常接收点击。
             setOnTouchListener(object : View.OnTouchListener {
                 var lastY = 0f
                 var downY = 0
                 override fun onTouch(v: View, e: MotionEvent): Boolean {
-                    when (e.actionMasked) {
+                    return when (e.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
                             lastY = e.rawY
                             downY = lp.y
-                            return false // 不拦截按钮点击
+                            false
                         }
                         MotionEvent.ACTION_MOVE -> {
                             val dy = (e.rawY - lastY).toInt()
                             lp.y = downY + dy
-                            // 限制在屏幕内
                             val h = resources.displayMetrics.heightPixels
                             val viewH = v.height
                             lp.y = max(-h / 2 + viewH / 2, min(h / 2 - viewH / 2, lp.y))
-                            try {
-                                // 使用当前触摸的视图 v 更新布局，避免未解析的引用
-                                wm.updateViewLayout(v, lp)
-                            } catch (_: Throwable) { }
-                            return true
+                            try { wm.updateViewLayout(v, lp) } catch (_: Throwable) { }
+                            true
                         }
-                        else -> return false
+                        else -> false
                     }
                 }
             })
 
+            // 按钮点击：直接抓文本 + 直接入库（不依赖系统广播），保证“点就记”
             btnCopy.setOnClickListener {
                 serviceScope.launch(Dispatchers.IO) {
-                    ClipboardAccessibilityService.performCopy()
+                    val text = ClipboardAccessibilityService.captureCopy()
+                    if (!text.isNullOrEmpty()) {
+                        try { repository.insertItem(text) } catch (_: Throwable) { }
+                    }
                 }
             }
             btnCut.setOnClickListener {
                 serviceScope.launch(Dispatchers.IO) {
-                    ClipboardAccessibilityService.performCut()
+                    val text = ClipboardAccessibilityService.captureCut()
+                    if (!text.isNullOrEmpty()) {
+                        try { repository.insertItem(text) } catch (_: Throwable) { }
+                    }
                 }
             }
             btnPaste.setOnClickListener {
                 serviceScope.launch(Dispatchers.IO) {
-                    // 取最新一条进行粘贴
-                    val list = try { repository.getAllOnce() } catch (_: Throwable) { emptyList() }
-                    val latest = list.firstOrNull()?.content
+                    val latest = try { repository.getAllOnce().firstOrNull()?.content } catch (_: Throwable) { null }
                     ClipboardAccessibilityService.performPaste(latest)
                 }
             }
