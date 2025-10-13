@@ -1,6 +1,5 @@
 <!-- 文件: app/src/main/AndroidManifest.xml -->
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 文件: app/src/main/AndroidManifest.xml -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.infiniteclipboard">
 
@@ -40,7 +39,7 @@
             android:exported="false"
             android:label="@string/log_viewer_title" />
 
-        <!-- 瞬时前台透明页，用于必要时采集（保留，无UI感知） -->
+        <!-- 瞬时前台透明页（采集用） -->
         <activity
             android:name=".ui.TapRecordActivity"
             android:exported="false"
@@ -76,7 +75,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- Shizuku Provider（保护：仅系统持有者可跨用户访问） -->
+        <!-- Shizuku Provider -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
@@ -84,9 +83,6 @@
             android:enabled="true"
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
-
-        <!-- 已移除：中转键盘 ProxyImeService -->
-        <!-- 已移除：任何“测试探针”入口（按钮/Activity菜单） -->
 
     </application>
 </manifest>
