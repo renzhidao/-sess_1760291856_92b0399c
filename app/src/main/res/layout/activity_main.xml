@@ -46,6 +46,14 @@
             android:text="@string/set_proxy_keyboard"
             style="@style/Widget.Material3.Button.TextButton" />
 
+        <!-- 新增：日志按钮，避免 ViewBinding 编译错误 -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnLog"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/log_viewer"
+            style="@style/Widget.Material3.Button.TextButton" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnClearAll"
             android:layout_width="wrap_content"

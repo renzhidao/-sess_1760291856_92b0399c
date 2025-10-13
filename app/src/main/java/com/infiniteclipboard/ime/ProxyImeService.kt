@@ -1,4 +1,3 @@
-./app/src/main/java/com/infiniteclipboard/ime/ProxyImeService.kt
 // 文件: app/src/main/java/com/infiniteclipboard/ime/ProxyImeService.kt
 package com.infiniteclipboard.ime
 
@@ -15,7 +14,7 @@ import com.infiniteclipboard.ui.MainActivity
 class ProxyImeService : InputMethodService() {
 
     override fun onCreateInputView(): View {
-        // 不弹任何面板，返回一个极简不可见视图
+        // 不弹任何系统面板，返回一个极简不可见视图
         return View(this)
     }
 
@@ -34,12 +33,12 @@ class ProxyImeService : InputMethodService() {
             acted = trySwitchToIme(targetImeId)
         }
 
-        // 2) 切换失败或未设置键盘，则尝试打开用户指定应用（组件优先，再按包名）
+        // 2) 切换失败或未设置键盘：尝试打开用户指定应用（组件优先，再按包名）
         if (!acted) {
             acted = tryLaunchComponent(targetAppComponent) || tryLaunchPackage(targetAppPkg)
         }
 
-        // 3) 都没有配置时，打开主界面让用户选择
+        // 3) 都没有配置：打开主界面让用户选择
         if (!acted) {
             try {
                 val intent = Intent(this, MainActivity::class.java).apply {

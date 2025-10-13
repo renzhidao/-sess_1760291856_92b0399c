@@ -20,4 +20,9 @@
         android:id="@+id/action_set_proxy_keyboard"
         android:title="@string/set_proxy_keyboard"
         android:showAsAction="never|withText" />
+    <!-- 新增：设置快捷应用（供代理键盘唤起时直接打开） -->
+    <item
+        android:id="@+id/action_set_quick_app"
+        android:title="@string/set_quick_app"
+        android:showAsAction="never|withText" />
 </menu>
