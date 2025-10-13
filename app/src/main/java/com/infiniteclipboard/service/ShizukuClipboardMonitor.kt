@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// Shizuku 全局剪贴板监听（Binder 版，替代 cmd）：通过 IClipboard 轮询读取，ROM 无需支持 `cmd clipboard`
+// Shizuku 全局剪贴板监听（Binder 版，替代 cmd）：IClipboard 反射读取，兼容多签名（String/String+int/AttributionSource）
 package com.infiniteclipboard.service
 
 import android.content.ClipData
@@ -9,11 +9,13 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Process
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 import rikka.shizuku.Shizuku
-import rikka.shizuku.SystemServiceHelper // 修复导入路径：rikka.shizuku.SystemServiceHelper（而非 rikka.shizuku.system.server）
+import rikka.shizuku.SystemServiceHelper
+import java.lang.reflect.Constructor
 import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicLong
 
@@ -30,8 +32,16 @@ object ShizukuClipboardMonitor {
     // IClipboard 代理 & 反射方法缓存
     @Volatile private var iClipboard: Any? = null
     @Volatile private var methodGetPrimaryClip: Method? = null
-    // 0: getPrimaryClip(), 1: getPrimaryClip(String), 2: getPrimaryClip(String, int)
-    @Volatile private var methodSigType: Int = -1
+
+    // 调用计划类型
+    // 0: getPrimaryClip()
+    // 1: getPrimaryClip(String)
+    // 2: getPrimaryClip(String, Int)
+    // 3: getPrimaryClip(String, String)
+    // 4: getPrimaryClip(String, String, Int)
+    // 5: getPrimaryClip(AttributionSource)               // Android 12/13 变体之一
+    // 6: getPrimaryClip(AttributionSource, Int)          // Android 12/13 常见
+    @Volatile private var planType: Int = -1
 
     // 最近一次变更的摘要（用于去重）
     private val lastTextHash = AtomicLong(0L)
@@ -61,7 +71,6 @@ object ShizukuClipboardMonitor {
     private fun isAvailable(): Boolean = safePing()
     fun hasPermission(): Boolean = try { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (_: Throwable) { false }
 
-    // 主线程请求权限
     fun ensurePermission(context: Context, onResult: (Boolean) -> Unit) {
         if (hasPermission()) { onResult(true); return }
         val post = { Shizuku.requestPermission(REQ_CODE) }
@@ -94,20 +103,17 @@ object ShizukuClipboardMonitor {
         val appCtx = context.applicationContext
 
         pollJob = scope.launch {
-            // 尝试绑定 IClipboard 并解析方法签名（失败会反复重试）
             ensureIClipboardBound(appCtx)
 
-            // 心跳
             heartbeatJob?.cancel()
             heartbeatJob = launch {
                 while (isActive) {
                     delay(2000)
                     val since = System.currentTimeMillis() - lastPollAt.get()
-                    LogUtils.d(TAG, "heartbeat: lastPoll=${since}ms iCb=${iClipboard!=null} sig=$methodSigType perm=${hasPermission()} job=${pollJob?.isActive==true}")
+                    LogUtils.d(TAG, "heartbeat: lastPoll=${since}ms iCb=${iClipboard!=null} plan=$planType perm=${hasPermission()} job=${pollJob?.isActive==true}")
                 }
             }
 
-            // 轮询读取（轻量，避免占用过多）
             val PKG = appCtx.packageName
             var userIdCache: Int? = null
 
@@ -116,20 +122,40 @@ object ShizukuClipboardMonitor {
                 try {
                     var proxy = iClipboard
                     var m = methodGetPrimaryClip
-                    if (proxy == null || m == null) {
+                    if (proxy == null || m == null || planType < 0) {
                         ensureIClipboardBound(appCtx)
                         proxy = iClipboard
                         m = methodGetPrimaryClip
                     }
 
-                    val clipData = if (proxy != null && m != null) {
-                        when (methodSigType) {
-                            2 -> {
+                    val clipData: ClipData? = if (proxy != null && m != null && planType >= 0) {
+                        when (planType) {
+                            6 -> { // (AttributionSource, Int)
+                                val uid = userIdCache ?: (getMyUserIdOrNull() ?: 0).also { userIdCache = it }
+                                val src = buildAttributionSourceOrNull(Process.myUid(), PKG, null)
+                                if (src != null) m.invoke(proxy, src, uid) as? ClipData else null
+                            }
+                            5 -> { // (AttributionSource)
+                                val src = buildAttributionSourceOrNull(Process.myUid(), PKG, null)
+                                if (src != null) m.invoke(proxy, src) as? ClipData else null
+                            }
+                            4 -> { // (String, String, Int)
+                                val uid = userIdCache ?: (getMyUserIdOrNull() ?: 0).also { userIdCache = it }
+                                m.invoke(proxy, PKG, null, uid) as? ClipData
+                            }
+                            3 -> { // (String, String)
+                                m.invoke(proxy, PKG, null) as? ClipData
+                            }
+                            2 -> { // (String, Int)
                                 val uid = userIdCache ?: (getMyUserIdOrNull() ?: 0).also { userIdCache = it }
                                 m.invoke(proxy, PKG, uid) as? ClipData
                             }
-                            1 -> m.invoke(proxy, PKG) as? ClipData
-                            0 -> m.invoke(proxy) as? ClipData
+                            1 -> { // (String)
+                                m.invoke(proxy, PKG) as? ClipData
+                            }
+                            0 -> { // ()
+                                m.invoke(proxy) as? ClipData
+                            }
                             else -> null
                         }
                     } else null
@@ -149,16 +175,15 @@ object ShizukuClipboardMonitor {
                         }
                     }
                 } catch (t: Throwable) {
-                    // 若出现反射/安全异常，下次循环会重绑
                     LogUtils.e(TAG, "binder 轮询失败", t)
                     // 清空缓存以触发重试
                     iClipboard = null
                     methodGetPrimaryClip = null
-                    methodSigType = -1
-                    delay(600) // 短暂退避
+                    planType = -1
+                    delay(600)
                 }
 
-                delay(350) // 轮询间隔（可按需调整）
+                delay(350)
             }
         }
     }
@@ -171,12 +196,12 @@ object ShizukuClipboardMonitor {
         heartbeatJob = null
         iClipboard = null
         methodGetPrimaryClip = null
-        methodSigType = -1
+        planType = -1
     }
 
-    // 绑定 IClipboard 并解析 getPrimaryClip 方法签名
+    // 绑定 IClipboard 并解析 getPrimaryClip 方法签名（全面兼容）
     private fun ensureIClipboardBound(context: Context) {
-        if (iClipboard != null && methodGetPrimaryClip != null && methodSigType >= 0) return
+        if (iClipboard != null && methodGetPrimaryClip != null && planType >= 0) return
         try {
             val binder = SystemServiceHelper.getSystemService(SERVICE) as? IBinder
             if (binder == null) {
@@ -190,46 +215,114 @@ object ShizukuClipboardMonitor {
                 return
             }
             iClipboard = proxy
-            // 尝试方法签名：2参(String,int) → 1参(String) → 0参()
+
+            // 遍历所有名为 getPrimaryClip 的 public 方法，选择最优计划
             val clazz = proxy.javaClass
-            var m: Method? = null
-            var sig = -1
+            val candidates = clazz.methods.filter { it.name == "getPrimaryClip" }
+            var picked: Method? = null
+            var plan = -1
 
-            // 2参
-            try {
-                m = clazz.getMethod("getPrimaryClip", String::class.java, Int::class.javaPrimitiveType)
-                sig = 2
-            } catch (_: NoSuchMethodException) { }
-            // 1参
-            if (m == null) {
-                try {
-                    m = clazz.getMethod("getPrimaryClip", String::class.java)
-                    sig = 1
-                } catch (_: NoSuchMethodException) { }
+            // 先尝试(AttributionSource, int) / (AttributionSource)
+            for (m in candidates) {
+                val pt = m.parameterTypes
+                if (pt.size == 2 && isAttributionSource(pt[0]) && isInt(pt[1])) { picked = m; plan = 6; break }
             }
-            // 0参
-            if (m == null) {
-                try {
-                    m = clazz.getMethod("getPrimaryClip")
-                    sig = 0
-                } catch (_: NoSuchMethodException) { }
+            if (picked == null) {
+                for (m in candidates) {
+                    val pt = m.parameterTypes
+                    if (pt.size == 1 && isAttributionSource(pt[0])) { picked = m; plan = 5; break }
+                }
+            }
+            // 再尝试(String, String, int) / (String, int) / (String, String) / (String) / ()
+            if (picked == null) {
+                for (m in candidates) {
+                    val pt = m.parameterTypes
+                    if (pt.size == 3 && isString(pt[0]) && isString(pt[1]) && isInt(pt[2])) { picked = m; plan = 4; break }
+                }
+            }
+            if (picked == null) {
+                for (m in candidates) {
+                    val pt = m.parameterTypes
+                    if (pt.size == 2 && isString(pt[0]) && isInt(pt[1])) { picked = m; plan = 2; break }
+                }
+            }
+            if (picked == null) {
+                for (m in candidates) {
+                    val pt = m.parameterTypes
+                    if (pt.size == 2 && isString(pt[0]) && isString(pt[1])) { picked = m; plan = 3; break }
+                }
+            }
+            if (picked == null) {
+                for (m in candidates) {
+                    val pt = m.parameterTypes
+                    if (pt.size == 1 && isString(pt[0])) { picked = m; plan = 1; break }
+                }
+            }
+            if (picked == null) {
+                for (m in candidates) {
+                    if (m.parameterCount == 0) { picked = m; plan = 0; break }
+                }
             }
 
-            if (m == null) {
-                LogUtils.d(TAG, "未找到 getPrimaryClip 方法，proxy=${clazz.name}")
+            if (picked == null) {
+                if (planType != -2) { // 仅首次打印，避免刷屏
+                    LogUtils.d(TAG, "未找到 getPrimaryClip 方法，proxy=${clazz.name}")
+                }
+                planType = -2 // 标记为不可用，避免频繁重复解析
                 iClipboard = null
+                methodGetPrimaryClip = null
                 return
             }
 
-            methodGetPrimaryClip = m
-            methodSigType = sig
-            LogUtils.d(TAG, "IClipboard 绑定成功，签名类型=$sig 方法=$m")
+            methodGetPrimaryClip = picked
+            planType = plan
+            LogUtils.d(TAG, "IClipboard 绑定成功，计划=$plan 方法=$picked")
         } catch (t: Throwable) {
             LogUtils.e(TAG, "绑定 IClipboard 失败", t)
             iClipboard = null
             methodGetPrimaryClip = null
-            methodSigType = -1
+            planType = -1
         }
+    }
+
+    private fun isString(c: Class<*>) = c == String::class.java
+    private fun isInt(c: Class<*>) = (c == Int::class.javaPrimitiveType) || (c == Integer::class.java)
+    private fun isAttributionSource(c: Class<*>) = c.name == "android.content.AttributionSource"
+
+    // 反射构造 AttributionSource(uid, packageName, attributionTag?)，不同 ROM/SDK 可能构造不同，尽量兼容
+    private fun buildAttributionSourceOrNull(uid: Int, pkg: String, tag: String?): Any? {
+        return try {
+            val cls = Class.forName("android.content.AttributionSource")
+            // 优先找 (int, String, String) 构造
+            val ctors: Array<Constructor<*>> = cls.constructors as Array<Constructor<*>>
+            var ctor: Constructor<*>? = null
+            for (c in ctors) {
+                val pt = c.parameterTypes
+                if (pt.size == 3 && isInt(pt[0]) && isString(pt[1]) && isString(pt[2])) { ctor = c; break }
+            }
+            if (ctor != null) {
+                ctor.newInstance(uid, pkg, tag) // tag 可为 null
+            } else {
+                // 兜底：有的版本可能只有 (int, String) 或者 builder；尝试 (int, String)
+                for (c in ctors) {
+                    val pt = c.parameterTypes
+                    if (pt.size == 2 && isInt(pt[0]) && isString(pt[1])) {
+                        return c.newInstance(uid, pkg)
+                    }
+                }
+                // 最后尝试静态 Builder（若存在）
+                val builderCls = try { Class.forName("android.content.AttributionSource\$Builder") } catch (_: Throwable) { null }
+                if (builderCls != null) {
+                    val bCtor = builderCls.getConstructor(Int::class.javaPrimitiveType, String::class.java)
+                    val builder = bCtor.newInstance(uid, pkg)
+                    val setTag = builderCls.methods.firstOrNull { it.name == "setAttributionTag" && it.parameterTypes.size == 1 && isString(it.parameterTypes[0]) }
+                    if (setTag != null && tag != null) setTag.invoke(builder, tag)
+                    val build = builderCls.methods.firstOrNull { it.name == "build" && it.parameterCount == 0 }
+                    if (build != null) return build.invoke(builder)
+                }
+                null
+            }
+        } catch (_: Throwable) { null }
     }
 
     // ClipData → 纯文本
