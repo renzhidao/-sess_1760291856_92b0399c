@@ -29,7 +29,7 @@ import com.infiniteclipboard.ui.TapRecordActivity
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collectLatest // 修复: 添加 collectLatest 引用
 
 class ClipboardMonitorService : Service() {
 
@@ -165,14 +165,20 @@ class ClipboardMonitorService : Service() {
             desiredW,
             WindowManager.LayoutParams.WRAP_CONTENT,
             wmType,
+            // 修复：不抢输入焦点，避免影响键盘
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = prefs.getInt("overlay_pos_x", (screenW - desiredW) / 2)
             y = prefs.getInt("overlay_pos_y", dp(64f))
         }
+        LogUtils.d(
+            "ClipboardService",
+            "overlay flags=0x${Integer.toHexString(lp.flags)} type=$wmType w=$desiredW maxH=$maxHeight"
+        )
 
         val themedContext = android.view.ContextThemeWrapper(this, R.style.Theme_InfiniteClipboard)
         val v = LayoutInflater.from(themedContext).inflate(R.layout.activity_clipboard_window, null, false)
