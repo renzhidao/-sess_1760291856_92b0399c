@@ -39,14 +39,7 @@
             android:textColor="@color/text_secondary"
             android:textSize="14sp" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnKeyboard"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/set_proxy_keyboard"
-            style="@style/Widget.Material3.Button.TextButton" />
-
-        <!-- 新增：日志按钮，避免 ViewBinding 编译错误 -->
+        <!-- 日志按钮 -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnLog"
             android:layout_width="wrap_content"

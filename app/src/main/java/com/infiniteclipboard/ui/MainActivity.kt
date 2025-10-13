@@ -1,4 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/ui/MainActivity.kt
+// 文件: app/src/main/java/com/infiniteclipboard/ui/MainActivity.kt
 package com.infiniteclipboard.ui
 
 import android.Manifest

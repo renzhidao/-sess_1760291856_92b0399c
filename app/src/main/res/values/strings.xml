@@ -1,3 +1,4 @@
+<!-- 文件: app/src/main/res/values/strings.xml -->
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 文件: app/src/main/res/values/strings.xml -->
 <resources>
@@ -66,4 +67,7 @@
     <string name="set_quick_app">设置快捷应用</string>
     <string name="pick_quick_app_title">选择快捷应用</string>
     <string name="quick_app_saved">已设置快捷应用：%1$s</string>
+
+    <!-- Shizuku 菜单 -->
+    <string name="shizuku_toggle">Shizuku全局监听</string>
 </resources>

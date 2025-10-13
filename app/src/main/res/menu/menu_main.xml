@@ -1,3 +1,4 @@
+<!-- 文件: app/src/main/res/menu/menu_main.xml -->
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 文件: app/src/main/res/menu/menu_main.xml -->
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
@@ -16,10 +17,10 @@
         android:title="@string/action_import"
         android:icon="@drawable/ic_import"
         android:showAsAction="never|withText" />
-    <!-- 新增：Shizuku 全局监听开关 -->
+    <!-- Shizuku 全局监听开关 -->
     <item
         android:id="@+id/action_shizuku_toggle"
-        android:title="开启Shizuku全局监听"
+        android:title="@string/shizuku_toggle"
         android:showAsAction="never|withText" />
     <!-- 已移除：action_set_proxy_keyboard -->
 </menu>
