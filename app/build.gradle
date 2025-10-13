@@ -33,7 +33,6 @@ android {
         viewBinding true
     }
 
-    // 关键：排除任意 merged_*.kt（双保险）
     sourceSets {
         main {
             java {
@@ -42,8 +41,6 @@ android {
         }
     }
 
-    // 关键：在编译前清理垃圾合并文件（不改仓库，只清 runner 工作区）
-    // 这样即使 extractor/流程又生成了 merged_*.kt，也会先被删除
     tasks.register('sanitizeMergedKt') {
         doLast {
             def victims = fileTree(dir: "${projectDir}/src", include: ['**/merged_*.kt'])
@@ -56,7 +53,6 @@ android {
             }
         }
     }
-    // 确保在 preBuild 前执行
     tasks.matching { it.name == "preBuild" }.configureEach {
         dependsOn 'sanitizeMergedKt'
     }
@@ -87,6 +83,9 @@ dependencies {
     implementation 'androidx.room:room-runtime:2.5.2'
     implementation 'androidx.room:room-ktx:2.5.2'
     kapt 'androidx.room:room-compiler:2.5.2'
+
+    // Shizuku (用于全局剪贴板监听的 shell 能力)
+    implementation 'dev.rikka.shizuku:api:13.1.5'
 
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'

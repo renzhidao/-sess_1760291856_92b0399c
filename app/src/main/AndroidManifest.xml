@@ -39,7 +39,7 @@
             android:exported="false"
             android:label="@string/log_viewer_title" />
 
-        <!-- 新增：瞬时前台透明页，用于前台读取剪贴板后立刻关闭 -->
+        <!-- 瞬时前台透明页，用于必要时采集（保留，无UI感知） -->
         <activity
             android:name=".ui.TapRecordActivity"
             android:exported="false"
@@ -66,19 +66,6 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <service
-            android:name=".ime.ProxyImeService"
-            android:label="@string/ime_proxy_name"
-            android:permission="android.permission.BIND_INPUT_METHOD"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.view.InputMethod" />
-            </intent-filter>
-            <meta-data
-                android:name="android.view.im"
-                android:resource="@xml/proxy_ime" />
-        </service>
-
         <receiver
             android:name=".boot.BootReceiver"
             android:enabled="true"
@@ -87,6 +74,9 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- 已移除：中转键盘 ProxyImeService -->
+        <!-- 已移除：任何“测试探针”入口（按钮/Activity菜单） -->
 
     </application>
 </manifest>

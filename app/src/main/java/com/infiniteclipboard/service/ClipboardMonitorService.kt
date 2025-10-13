@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardMonitorService.kt
-// 前台监控服务 + 屏幕边缘小条（剪切/复制/粘贴/测试）
+// 前台监控服务 + 屏幕边缘小条（剪切/复制/粘贴）
 // 小条只拦截自身区域的触摸；不影响其他区域的滑动/输入
 package com.infiniteclipboard.service
 
@@ -27,22 +27,16 @@ import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.ui.ClipboardWindowActivity
 import com.infiniteclipboard.ui.TapRecordActivity
-import com.infiniteclipboard.ui.TestProbeActivity
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
-import kotlin.math.max
-import kotlin.math.min
+import kotlinx.coroutines.*
 
 class ClipboardMonitorService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var clipboardManager: ClipboardManager
     private val repository by lazy { (application as ClipboardApplication).repository }
+    private val prefs by lazy { getSharedPreferences("settings", Context.MODE_PRIVATE) }
 
     private var lastClipboardContent: String? = null
     private var isPaused: Boolean = false
@@ -50,7 +44,6 @@ class ClipboardMonitorService : Service() {
     // 边缘小条
     private lateinit var wm: WindowManager
     private var barView: View? = null
-    private var barLp: WindowManager.LayoutParams? = null
 
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         if (!isPaused) handleClipboardChange()
@@ -65,6 +58,11 @@ class ClipboardMonitorService : Service() {
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
         ensureEdgeBar()
+
+        // 启动 Shizuku 监听（若开启且可用）
+        val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
+        if (enableShizuku) ShizukuClipboardMonitor.start(this)
+
         LogUtils.d("ClipboardService", "服务已启动，监听器已注册 + 边缘小条已显示")
     }
 
@@ -72,6 +70,8 @@ class ClipboardMonitorService : Service() {
         when (intent?.action) {
             ACTION_TOGGLE -> togglePause()
             ACTION_CLEAR_ALL -> clearAll()
+            ACTION_SHIZUKU_START -> ShizukuClipboardMonitor.start(this)
+            ACTION_SHIZUKU_STOP -> ShizukuClipboardMonitor.stop()
         }
         updateNotification()
         return START_STICKY
@@ -83,28 +83,33 @@ class ClipboardMonitorService : Service() {
         super.onDestroy()
         try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) { }
         removeEdgeBar()
+        ShizukuClipboardMonitor.stop()
         serviceScope.cancel()
     }
 
-    // 变更策略：检测到变更时“必须”拉起瞬时前台采集；但若是我们自己设置的剪贴板（按钮产生），则跳过拉起
+    // 外部应用写入：可选择触发瞬时前台采集；自家写入（带标签）跳过
     private fun handleClipboardChange() {
         try {
             val clip = clipboardManager.primaryClip
             val label = try { clip?.description?.label?.toString() } catch (_: Throwable) { null }
             if (label == "com.infiniteclipboard") {
-                LogUtils.d("ClipboardService", "检测到内部写入的剪贴板，跳过前台采集")
+                LogUtils.d("ClipboardService", "内部写入，跳过采集")
                 return
             }
-            val it = Intent(this, TapRecordActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            // 若已开 Shizuku，则无需瞬时前台；否则可用瞬时前台兜底
+            val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
+            if (!enableShizuku) {
+                val it = Intent(this, TapRecordActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                }
+                startActivity(it)
             }
-            startActivity(it)
         } catch (e: Exception) {
             LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
         }
     }
 
-    // 测试要求的方法保留（按钮直录或其他路径调用）
+    // 测试要求的方法保留
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -143,8 +148,8 @@ class ClipboardMonitorService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            else
-                @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+            else @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
@@ -180,14 +185,11 @@ class ClipboardMonitorService : Service() {
             val btnCut = makeBtn("剪切")
             val btnCopy = makeBtn("复制")
             val btnPaste = makeBtn("粘贴")
-            val btnTest = makeBtn("测试") // 新增：测试按钮
 
             addView(btnCut)
             addView(btnCopy)
             addView(btnPaste)
-            addView(btnTest)
 
-            // 拖动小条（只改变垂直位置）。返回 false 以便子按钮正常接收点击。
             setOnTouchListener(object : View.OnTouchListener {
                 var lastY = 0f
                 var downY = 0
@@ -203,7 +205,7 @@ class ClipboardMonitorService : Service() {
                             lp.y = downY + dy
                             val h = resources.displayMetrics.heightPixels
                             val viewH = v.height
-                            lp.y = max(-h / 2 + viewH / 2, min(h / 2 - viewH / 2, lp.y))
+                            lp.y = lp.y.coerceIn(-h / 2 + viewH / 2, h / 2 - viewH / 2)
                             try { wm.updateViewLayout(v, lp) } catch (_: Throwable) { }
                             true
                         }
@@ -212,7 +214,6 @@ class ClipboardMonitorService : Service() {
                 }
             })
 
-            // 按钮点击：直接抓文本 + 直接入库（不依赖系统广播），保证“点就记”
             btnCopy.setOnClickListener {
                 serviceScope.launch(Dispatchers.IO) {
                     val text = ClipboardAccessibilityService.captureCopy()
@@ -235,22 +236,11 @@ class ClipboardMonitorService : Service() {
                     ClipboardAccessibilityService.performPaste(latest)
                 }
             }
-            // 新增：测试按钮 -> 打开测试探针页
-            btnTest.setOnClickListener {
-                serviceScope.launch(Dispatchers.Main) {
-                    try {
-                        val it = Intent(this@ClipboardMonitorService, TestProbeActivity::class.java)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        startActivity(it)
-                    } catch (_: Throwable) { }
-                }
-            }
         }
 
         try {
             wm.addView(container, lp)
             barView = container
-            barLp = lp
         } catch (_: Throwable) { }
     }
 
@@ -258,7 +248,6 @@ class ClipboardMonitorService : Service() {
         val v = barView ?: return
         try { wm.removeViewImmediate(v) } catch (_: Throwable) { }
         barView = null
-        barLp = null
     }
 
     // ========== 通知 ==========
@@ -326,6 +315,8 @@ class ClipboardMonitorService : Service() {
 
         private const val ACTION_TOGGLE = "com.infiniteclipboard.action.TOGGLE"
         private const val ACTION_CLEAR_ALL = "com.infiniteclipboard.action.CLEAR_ALL"
+        const val ACTION_SHIZUKU_START = "com.infiniteclipboard.action.SHIZUKU_START"
+        const val ACTION_SHIZUKU_STOP = "com.infiniteclipboard.action.SHIZUKU_STOP"
 
         fun start(context: Context) {
             val intent = Intent(context, ClipboardMonitorService::class.java)

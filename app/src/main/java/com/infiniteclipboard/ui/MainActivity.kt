@@ -19,8 +19,6 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.view.accessibility.AccessibilityManager
-import android.view.inputmethod.InputMethodInfo
-import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -35,6 +33,7 @@ import com.infiniteclipboard.data.ClipboardEntity
 import com.infiniteclipboard.databinding.ActivityMainBinding
 import com.infiniteclipboard.service.ClipboardMonitorService
 import com.infiniteclipboard.service.ClipboardAccessibilityService
+import com.infiniteclipboard.service.ShizukuClipboardMonitor
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
@@ -51,7 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adapter: ClipboardAdapter
     private lateinit var clipboardManager: ClipboardManager
     private val repository by lazy { (application as ClipboardApplication).repository }
-    private val prefs by lazy { getSharedPreferences("proxy_ime", Context.MODE_PRIVATE) }
+    private val prefs by lazy { getSharedPreferences("settings", Context.MODE_PRIVATE) }
 
     private val createDoc = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -77,12 +76,16 @@ class MainActivity : AppCompatActivity() {
         checkPermissions()
         observeData()
 
-        // 启动前台服务（满足测试、保持存活）
+        // 启动前台服务（保持存活）
         ClipboardMonitorService.start(this)
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.menu_main, menu)
+        // 根据当前状态更新标题
+        val enabled = prefs.getBoolean("shizuku_enabled", false)
+        menu.findItem(R.id.action_shizuku_toggle)?.title =
+            if (enabled) "关闭Shizuku全局监听" else "开启Shizuku全局监听"
         return true
     }
 
@@ -90,8 +93,33 @@ class MainActivity : AppCompatActivity() {
         R.id.action_clear_all -> { showClearAllDialog(); true }
         R.id.action_export -> { createDoc.launch("clipboard_backup.json"); true }
         R.id.action_import -> { openDoc.launch(arrayOf("application/json")); true }
-        R.id.action_set_proxy_keyboard -> { showProxyKeyboardPicker(); true }
+        R.id.action_shizuku_toggle -> { toggleShizuku(); true }
         else -> super.onOptionsItemSelected(item)
+    }
+
+    private fun toggleShizuku() {
+        val enabled = prefs.getBoolean("shizuku_enabled", false)
+        if (!enabled) {
+            // 开启
+            if (!ShizukuClipboardMonitor.isAvailable()) {
+                Toast.makeText(this, "Shizuku 未连接或不可用", Toast.LENGTH_LONG).show()
+                return
+            }
+            if (!ShizukuClipboardMonitor.hasPermission()) {
+                ShizukuClipboardMonitor.requestPermission()
+                Toast.makeText(this, "请在Shizuku弹窗中授权后再次点击", Toast.LENGTH_LONG).show()
+                return
+            }
+            prefs.edit().putBoolean("shizuku_enabled", true).apply()
+            ShizukuClipboardMonitor.start(this)
+            Toast.makeText(this, "已开启 Shizuku 全局监听", Toast.LENGTH_SHORT).show()
+        } else {
+            // 关闭
+            prefs.edit().putBoolean("shizuku_enabled", false).apply()
+            ShizukuClipboardMonitor.stop()
+            Toast.makeText(this, "已关闭 Shizuku 全局监听", Toast.LENGTH_SHORT).show()
+        }
+        invalidateOptionsMenu()
     }
 
     private fun setupRecyclerView() {
@@ -122,37 +150,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupButtons() {
         binding.btnClearAll.setOnClickListener { showClearAllDialog() }
         binding.btnLog.setOnClickListener { startActivity(Intent(this, LogViewerActivity::class.java)) }
-        // 可见按钮：选择目标键盘（只存储偏好，不做静默切换）
-        binding.btnKeyboard.setOnClickListener { showProxyKeyboardPicker() }
-    }
-
-    private fun showProxyKeyboardPicker() {
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        val list = imm.enabledInputMethodList
-        val currentPkg = packageName
-        val displayList = list.filter { it.packageName != currentPkg }
-        if (displayList.isEmpty()) {
-            Toast.makeText(this, "未找到可中转的键盘，请先启用其它键盘", Toast.LENGTH_LONG).show()
-            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
-            return
-        }
-        val labels = displayList.map { it.loadLabel(packageManager).toString() }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.pick_keyboard_title))
-            .setItems(labels) { _, which ->
-                val info: InputMethodInfo = displayList[which]
-                val id = info.id
-                val label = labels[which]
-                prefs.edit()
-                    .putString("target_ime_id", id)
-                    .putString("target_ime_label", label)
-                    .apply()
-                Toast.makeText(this, getString(R.string.proxy_keyboard_saved, label), Toast.LENGTH_LONG).show()
-                // 引导用户把“剪切板代理键盘”设为默认（一次性）
-                startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
+        // 已删除：中转键盘 UI 与逻辑
     }
 
     private fun observeData() {
@@ -318,17 +316,6 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@MainActivity, getString(R.string.import_failed), Toast.LENGTH_LONG).show()
                 }
-            }
-        }
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (grantResults.isNotEmpty() && grantResults[0] != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, R.string.permission_required, Toast.LENGTH_LONG).show()
             }
         }
     }
