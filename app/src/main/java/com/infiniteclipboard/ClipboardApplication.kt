@@ -6,6 +6,7 @@ import android.app.Application
 import com.infiniteclipboard.data.ClipboardDatabase
 import com.infiniteclipboard.data.ClipboardRepository
 import com.infiniteclipboard.service.ShizukuClipboardMonitor
+import org.lsposed.hiddenapibypass.HiddenApiBypass
 
 class ClipboardApplication : Application() {
 
@@ -15,7 +16,14 @@ class ClipboardApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        // 初始化 Shizuku 监听器（Binder 收到/断开、权限回调），修复“未连接”的判定与自动启动
+
+        // 放开隐藏 API 限制（允许反射系统隐藏类/方法：IClipboard/AttributionSource 等）
+        try {
+            // 宽松模式：放开 android.* 下的隐藏API
+            HiddenApiBypass.addHiddenApiExemptions("Landroid/")
+        } catch (_: Throwable) { }
+
+        // 初始化 Shizuku 监听器
         try { ShizukuClipboardMonitor.init(this) } catch (_: Throwable) { }
     }
 

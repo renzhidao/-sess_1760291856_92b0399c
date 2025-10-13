@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// Shizuku 全局剪贴板监听（Binder 版，替代 cmd）：IClipboard 反射读取，兼容多签名（String/String+int/AttributionSource）
+// Shizuku 全局剪贴板监听（Binder 版，替代 cmd）：IClipboard 反射读取，兼容多签名/多命名变体 + 隐藏API豁免
 package com.infiniteclipboard.service
 
 import android.content.ClipData
@@ -15,8 +15,10 @@ import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 import rikka.shizuku.Shizuku
 import rikka.shizuku.SystemServiceHelper
+import org.lsposed.hiddenapibypass.HiddenApiBypass
 import java.lang.reflect.Constructor
 import java.lang.reflect.Method
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 object ShizukuClipboardMonitor {
@@ -39,8 +41,8 @@ object ShizukuClipboardMonitor {
     // 2: getPrimaryClip(String, Int)
     // 3: getPrimaryClip(String, String)
     // 4: getPrimaryClip(String, String, Int)
-    // 5: getPrimaryClip(AttributionSource)               // Android 12/13 变体之一
-    // 6: getPrimaryClip(AttributionSource, Int)          // Android 12/13 常见
+    // 5: getPrimaryClip(AttributionSource)
+    // 6: getPrimaryClip(AttributionSource, Int)
     @Volatile private var planType: Int = -1
 
     // 最近一次变更的摘要（用于去重）
@@ -48,10 +50,15 @@ object ShizukuClipboardMonitor {
     private val lastPollAt = AtomicLong(0L)
 
     private const val REQ_CODE = 10086
+    private val hiddenReady = AtomicBoolean(false)
 
     fun init(context: Context) {
         val binderReady = safePing()
         LogUtils.d(TAG, "init: binderReady=$binderReady sdk=${Build.VERSION.SDK_INT}")
+
+        // 再次保证隐藏API豁免（即便 Application 已调用，这里兜底一次）
+        ensureHiddenApiExemptions()
+
         Shizuku.addBinderReceivedListener {
             LogUtils.d(TAG, "Binder received")
             if (hasPermission()) start(context)
@@ -64,6 +71,17 @@ object ShizukuClipboardMonitor {
             val granted = grantResult == PackageManager.PERMISSION_GRANTED
             LogUtils.d(TAG, "permission result: $granted")
             if (granted) start(context)
+        }
+    }
+
+    private fun ensureHiddenApiExemptions() {
+        if (hiddenReady.get()) return
+        try {
+            HiddenApiBypass.addHiddenApiExemptions("Landroid/")
+            hiddenReady.set(true)
+            LogUtils.d(TAG, "hidden api exemptions applied")
+        } catch (t: Throwable) {
+            LogUtils.e(TAG, "apply hidden api exemptions failed", t)
         }
     }
 
@@ -103,6 +121,7 @@ object ShizukuClipboardMonitor {
         val appCtx = context.applicationContext
 
         pollJob = scope.launch {
+            ensureHiddenApiExemptions()
             ensureIClipboardBound(appCtx)
 
             heartbeatJob?.cancel()
@@ -123,6 +142,7 @@ object ShizukuClipboardMonitor {
                     var proxy = iClipboard
                     var m = methodGetPrimaryClip
                     if (proxy == null || m == null || planType < 0) {
+                        ensureHiddenApiExemptions()
                         ensureIClipboardBound(appCtx)
                         proxy = iClipboard
                         m = methodGetPrimaryClip
@@ -176,7 +196,6 @@ object ShizukuClipboardMonitor {
                     }
                 } catch (t: Throwable) {
                     LogUtils.e(TAG, "binder 轮询失败", t)
-                    // 清空缓存以触发重试
                     iClipboard = null
                     methodGetPrimaryClip = null
                     planType = -1
@@ -199,7 +218,7 @@ object ShizukuClipboardMonitor {
         planType = -1
     }
 
-    // 绑定 IClipboard 并解析 getPrimaryClip 方法签名（全面兼容）
+    // 绑定 IClipboard 并解析 getPrimaryClip 方法签名（全面兼容 + 名称模糊匹配）
     private fun ensureIClipboardBound(context: Context) {
         if (iClipboard != null && methodGetPrimaryClip != null && planType >= 0) return
         try {
@@ -216,13 +235,18 @@ object ShizukuClipboardMonitor {
             }
             iClipboard = proxy
 
-            // 遍历所有名为 getPrimaryClip 的 public 方法，选择最优计划
+            // 遍历所有 public 方法，匹配名中包含 "getPrimaryClip" 的 ClipData 返回方法
             val clazz = proxy.javaClass
-            val candidates = clazz.methods.filter { it.name == "getPrimaryClip" }
+            val allMethods = clazz.methods.toList()
+            val candidates = allMethods.filter { m ->
+                val name = m.name.lowercase()
+                name.contains("getprimaryclip") && m.returnType == ClipData::class.java
+            }
+
             var picked: Method? = null
             var plan = -1
 
-            // 先尝试(AttributionSource, int) / (AttributionSource)
+            // 优先 AttributionSource 变体
             for (m in candidates) {
                 val pt = m.parameterTypes
                 if (pt.size == 2 && isAttributionSource(pt[0]) && isInt(pt[1])) { picked = m; plan = 6; break }
@@ -233,7 +257,7 @@ object ShizukuClipboardMonitor {
                     if (pt.size == 1 && isAttributionSource(pt[0])) { picked = m; plan = 5; break }
                 }
             }
-            // 再尝试(String, String, int) / (String, int) / (String, String) / (String) / ()
+            // 再尝试 String 族
             if (picked == null) {
                 for (m in candidates) {
                     val pt = m.parameterTypes
@@ -265,10 +289,10 @@ object ShizukuClipboardMonitor {
             }
 
             if (picked == null) {
-                if (planType != -2) { // 仅首次打印，避免刷屏
+                if (planType != -2) {
                     LogUtils.d(TAG, "未找到 getPrimaryClip 方法，proxy=${clazz.name}")
                 }
-                planType = -2 // 标记为不可用，避免频繁重复解析
+                planType = -2
                 iClipboard = null
                 methodGetPrimaryClip = null
                 return
@@ -289,11 +313,10 @@ object ShizukuClipboardMonitor {
     private fun isInt(c: Class<*>) = (c == Int::class.javaPrimitiveType) || (c == Integer::class.java)
     private fun isAttributionSource(c: Class<*>) = c.name == "android.content.AttributionSource"
 
-    // 反射构造 AttributionSource(uid, packageName, attributionTag?)，不同 ROM/SDK 可能构造不同，尽量兼容
+    // 反射构造 AttributionSource
     private fun buildAttributionSourceOrNull(uid: Int, pkg: String, tag: String?): Any? {
         return try {
             val cls = Class.forName("android.content.AttributionSource")
-            // 优先找 (int, String, String) 构造
             val ctors: Array<Constructor<*>> = cls.constructors as Array<Constructor<*>>
             var ctor: Constructor<*>? = null
             for (c in ctors) {
@@ -301,16 +324,14 @@ object ShizukuClipboardMonitor {
                 if (pt.size == 3 && isInt(pt[0]) && isString(pt[1]) && isString(pt[2])) { ctor = c; break }
             }
             if (ctor != null) {
-                ctor.newInstance(uid, pkg, tag) // tag 可为 null
+                ctor.newInstance(uid, pkg, tag)
             } else {
-                // 兜底：有的版本可能只有 (int, String) 或者 builder；尝试 (int, String)
                 for (c in ctors) {
                     val pt = c.parameterTypes
                     if (pt.size == 2 && isInt(pt[0]) && isString(pt[1])) {
                         return c.newInstance(uid, pkg)
                     }
                 }
-                // 最后尝试静态 Builder（若存在）
                 val builderCls = try { Class.forName("android.content.AttributionSource\$Builder") } catch (_: Throwable) { null }
                 if (builderCls != null) {
                     val bCtor = builderCls.getConstructor(Int::class.javaPrimitiveType, String::class.java)
@@ -325,7 +346,6 @@ object ShizukuClipboardMonitor {
         } catch (_: Throwable) { null }
     }
 
-    // ClipData → 纯文本
     private fun clipDataToText(context: Context, clip: ClipData?): String? {
         if (clip == null || clip.itemCount <= 0) return null
         val sb = StringBuilder()
@@ -355,6 +375,4 @@ object ShizukuClipboardMonitor {
     private fun snippet(s: String?, max: Int = 120): String {
         if (s == null) return "null"
         val oneLine = s.replace("\r", "\\r").replace("\n", "\\n")
-        return if (oneLine.length <= max) oneLine else oneLine.substring(0, max) + "…"
-    }
-}
+        return if (oneLine.length <= max) oneLine 

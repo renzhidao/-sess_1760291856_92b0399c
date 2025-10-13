@@ -84,9 +84,12 @@ dependencies {
     implementation 'androidx.room:room-ktx:2.5.2'
     kapt 'androidx.room:room-compiler:2.5.2'
 
-    // Shizuku (用于全局剪贴板监听的 shell 能力)
+    // Shizuku (用于全局剪贴板监听的 shell 能力 / Binder 直连能力)
     implementation 'dev.rikka.shizuku:api:13.1.5'
     implementation 'dev.rikka.shizuku:provider:13.1.5'
+
+    // Hidden API Bypass（放开隐藏API限制，允许反射 IClipboard/AttributionSource 等）
+    implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:4.3'
 
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
