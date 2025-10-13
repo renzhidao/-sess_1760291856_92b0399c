@@ -26,6 +26,7 @@ import androidx.core.app.NotificationCompat
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.ui.ClipboardWindowActivity
+import com.infiniteclipboard.ui.TapRecordActivity
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.CoroutineScope
@@ -84,22 +85,27 @@ class ClipboardMonitorService : Service() {
         serviceScope.cancel()
     }
 
+    // 变更策略：检测到变更时“必须”拉起瞬时前台采集；但若是我们自己设置的剪贴板（按钮产生），则跳过拉起
     private fun handleClipboardChange() {
-        serviceScope.launch(Dispatchers.IO) {
-            try {
-                val text = ClipboardUtils.getClipboardTextWithRetries(
-                    this@ClipboardMonitorService, attempts = 4, intervalMs = 120L
-                )
-                if (!text.isNullOrEmpty() && text != lastClipboardContent) {
-                    lastClipboardContent = text
-                    saveClipboardContent(text)
-                }
-            } catch (e: Exception) {
-                LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
+        try {
+            val clip = clipboardManager.primaryClip
+            val label = try { clip?.description?.label?.toString() } catch (_: Throwable) { null }
+            // 我们自己的按钮写入的剪贴板，标签为 com.infiniteclipboard → 跳过前台拉起，避免重复/打扰
+            if (label == "com.infiniteclipboard") {
+                LogUtils.d("ClipboardService", "检测到内部写入的剪贴板，跳过前台采集")
+                return
             }
+            // 对于第三方应用写入：必定拉起瞬时前台读取，保证在严格ROM上也能命中
+            val it = Intent(this, TapRecordActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            }
+            startActivity(it)
+        } catch (e: Exception) {
+            LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
         }
     }
 
+    // 测试要求的方法保留（主要用于按钮直录或其他路径调用）
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {

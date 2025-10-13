@@ -9,6 +9,8 @@ import android.os.SystemClock
 
 object ClipboardUtils {
 
+    private const val INTERNAL_LABEL = "com.infiniteclipboard"
+
     fun getClipboardText(context: Context): String? {
         return getClipboardTextRobust(context)
     }
@@ -60,9 +62,10 @@ object ClipboardUtils {
         return if (all.isEmpty()) null else all
     }
 
+    // 重要：使用我们自己的标签，方便在监听里识别“自家写入”的变更以跳过前台拉起
     fun setClipboardText(context: Context, text: String) {
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = ClipData.newPlainText("text", text)
+        val clip = ClipData.newPlainText(INTERNAL_LABEL, text)
         cm.setPrimaryClip(clip)
     }
 

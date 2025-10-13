@@ -1,5 +1,6 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardAccessibilityService.kt
-// 无障碍服务：监听变化入库 + 提供“边缘小条”可调用的复制/剪切/粘贴（带直录入库的文本抓取能力）
+// 无障碍服务：监听变化入库 + 提供“边缘小条”可调用的复制/剪切/粘贴
+// 增强：判断是否有选区；有则按选区复制/剪切；无选区则自动全选后生效；剪切失败时手动置空或删除选区文本
 package com.infiniteclipboard.service
 
 import android.accessibilityservice.AccessibilityService
@@ -18,6 +19,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
+import kotlin.math.max
+import kotlin.math.min
 
 class ClipboardAccessibilityService : AccessibilityService() {
 
@@ -92,8 +95,20 @@ class ClipboardAccessibilityService : AccessibilityService() {
         // 查找当前焦点可编辑节点
         private fun focusedEditableNode(svc: AccessibilityService?): AccessibilityNodeInfo? {
             val root = svc?.rootInActiveWindow ?: return null
-            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return null
-            return focused
+            return root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        }
+
+        // 读取当前选区范围（若无有效选区则返回 null）
+        private fun getSelectionRange(node: AccessibilityNodeInfo?): Pair<Int, Int>? {
+            if (node == null) return null
+            val start = node.textSelectionStart
+            val end = node.textSelectionEnd
+            if (start >= 0 && end >= 0 && start != end) {
+                val s = min(start, end)
+                val e = max(start, end)
+                return if (s < e) s to e else null
+            }
+            return null
         }
 
         // 选中全部（兜底）
@@ -107,7 +122,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } catch (_: Throwable) { false }
         }
 
-        // 直接设置文本（兜底）
+        // 设置文本（兜底）
         private fun setText(node: AccessibilityNodeInfo, text: String): Boolean {
             return try {
                 val args = Bundle().apply {
@@ -117,56 +132,84 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } catch (_: Throwable) { false }
         }
 
-        // 抓取文本（优先 node.text；选区细粒度多数控件不提供，退化为全量文本）
+        // 捕获节点文本（全量）
         private fun captureNodeText(node: AccessibilityNodeInfo?): String? {
             return node?.text?.toString()
         }
 
-        // 复制：尽力而为 + 返回我们认为复制/应被记录的文本（直接用于入库与设置系统剪贴板）
+        // 捕获选区文本（若存在选区）
+        private fun captureSelectedText(node: AccessibilityNodeInfo?): String? {
+            val full = node?.text?.toString() ?: return null
+            val range = getSelectionRange(node) ?: return null
+            val (s, e) = range
+            return if (s in 0..full.length && e in 0..full.length && s < e) {
+                full.substring(s, e)
+            } else null
+        }
+
+        // 复制：有选区→复制选区；无选区→自动全选后复制；无论系统广播是否触发，直接设置系统剪贴板并返回文本用于入库
         fun captureCopy(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
-            // 先抓文本，避免复制受限时拿不到
-            var text = captureNodeText(node)
-            // 先尝试 COPY；失败则全选后 COPY
-            var copied = node.performAction(AccessibilityNodeInfo.ACTION_COPY)
-            if (!copied) {
+
+            // 先尽量拿选区文本
+            var textToRecord = captureSelectedText(node)
+
+            // 若无选区，尝试全选以准备复制
+            if (textToRecord.isNullOrEmpty()) {
+                // 先读取全量文本作为备份
+                textToRecord = captureNodeText(node)
                 selectAll(node)
-                copied = node.performAction(AccessibilityNodeInfo.ACTION_COPY)
-                if (text.isNullOrEmpty()) text = captureNodeText(node)
             }
-            // 系统剪贴板同步（不依赖系统广播）
-            if (!text.isNullOrEmpty()) {
-                ClipboardUtils.setClipboardText(svc, text)
+
+            // 尝试 COPY（即便控件不触发系统剪贴板，我们也会手动写入）
+            node.performAction(AccessibilityNodeInfo.ACTION_COPY)
+
+            // 手动写系统剪贴板并返回
+            if (!textToRecord.isNullOrEmpty()) {
+                ClipboardUtils.setClipboardText(svc, textToRecord)
             }
-            return text
+            return textToRecord
         }
 
-        // 剪切：尽力而为 + 返回剪切掉的文本（直接用于入库与设置系统剪贴板）
+        // 剪切：有选区→剪切选区；无选区→自动全选后剪切；
+        // 如 ACTION_CUT 失败，则手动把被剪内容写入系统剪贴板，并用 SET_TEXT 置空或删除选区文本
         fun captureCut(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
-            // 抓旧文本
-            val oldText = captureNodeText(node)
-            // 优先 CUT；失败则全选后 CUT；仍失败则“复制后置空”
-            var cut = node.performAction(AccessibilityNodeInfo.ACTION_CUT)
-            if (!cut) {
-                selectAll(node)
-                cut = node.performAction(AccessibilityNodeInfo.ACTION_CUT)
-                if (!cut && !oldText.isNullOrEmpty()) {
-                    // 置空兜底
+
+            val full = captureNodeText(node) ?: ""
+            val sel = getSelectionRange(node)
+
+            var cutText: String?
+            var cutOk: Boolean
+
+            if (sel != null) {
+                val (s, e) = sel
+                cutText = if (s in 0..full.length && e in 0..full.length && s < e) full.substring(s, e) else ""
+                cutOk = node.performAction(AccessibilityNodeInfo.ACTION_CUT)
+                if (!cutOk) {
+                    // 手动删除选区文本
+                    val newText = full.removeRange(s, e.coerceAtMost(full.length))
+                    setText(node, newText)
+                }
+            } else {
+                // 无选区：剪切全部
+                cutText = full
+                cutOk = node.performAction(AccessibilityNodeInfo.ACTION_CUT)
+                if (!cutOk) {
                     setText(node, "")
-                    ClipboardUtils.setClipboardText(svc, oldText)
                 }
             }
-            // 同步系统剪贴板（部分控件 CUT 成功也会自动写系统剪贴板，这里再次确保）
-            if (!oldText.isNullOrEmpty()) {
-                ClipboardUtils.setClipboardText(svc, oldText)
+
+            if (!cutText.isNullOrEmpty()) {
+                // 无论 ACTION_CUT 是否成功，手动同步系统剪贴板
+                ClipboardUtils.setClipboardText(svc, cutText)
             }
-            return oldText
+            return cutText
         }
 
-        // 粘贴：优先 ACTION_PASTE；失败则直接 SET_TEXT
+        // 粘贴：优先 ACTION_PASTE；失败则直接 SET_TEXT（替换全部）
         fun performPaste(text: String?): Boolean {
             val svc = instanceRef?.get() ?: return false
             val node = focusedEditableNode(svc) ?: return false
