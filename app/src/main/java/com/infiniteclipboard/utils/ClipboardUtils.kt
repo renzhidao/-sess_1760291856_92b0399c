@@ -24,7 +24,7 @@ object ClipboardUtils {
         }
     }
 
-    // 短延迟重试：适配“回调先到、内容稍后可读”的时序
+    // 短延迟重试：适配部分系统“回调先到、内容稍后可读”的时序
     fun getClipboardTextWithRetries(
         context: Context,
         attempts: Int = 4,
