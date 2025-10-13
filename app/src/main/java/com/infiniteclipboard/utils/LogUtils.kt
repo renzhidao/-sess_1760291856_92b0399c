@@ -20,6 +20,12 @@ object LogUtils {
     fun d(tag: String, message: String) = log("D", tag, message)
     fun e(tag: String, message: String, throwable: Throwable? = null) =
         log("E", tag, if (throwable != null) "$message\n${throwable.stackTraceToString()}" else message)
+    
+    // 剪切板读取专用日志（带来源标记）
+    fun clipboard(source: String, content: String?) {
+        val preview = content?.take(50)?.replace("\n", "\\n") ?: "null"
+        log("D", "Clipboard[$source]", preview)
+    }
 
     private fun log(level: String, tag: String, message: String) {
         val ts = dateFormat.format(Date())

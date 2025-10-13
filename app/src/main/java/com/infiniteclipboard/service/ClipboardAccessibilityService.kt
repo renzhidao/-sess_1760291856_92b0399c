@@ -1,23 +1,24 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardAccessibilityService.kt
-// 无障碍服务：监听变化入库 + 提供“边缘小条”可调用的复制/剪切/粘贴
-// 增强：判断是否有选区；有则按选区复制/剪切；无选区则自动全选后生效；剪切失败时手动置空或删除选区文本
 package com.infiniteclipboard.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.infiniteclipboard.ClipboardApplication
+import com.infiniteclipboard.ui.TapRecordActivity
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
 import kotlin.math.max
 import kotlin.math.min
@@ -27,7 +28,11 @@ class ClipboardAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var clipboardManager: ClipboardManager
     private val repository by lazy { (application as ClipboardApplication).repository }
-    private var lastClipboardContent: String? = null
+    
+    // 去重：时间+内容哈希
+    private var lastTriggerTime = 0L
+    private var lastContentHash = 0L
+    private val handler = Handler(Looper.getMainLooper())
 
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         handleClipboardChange()
@@ -47,12 +52,10 @@ class ClipboardAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // 只监听文本选择和内容变化
         when (event?.eventType) {
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
-            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
-            AccessibilityEvent.TYPE_VIEW_FOCUSED,
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-            AccessibilityEvent.TYPE_VIEW_CLICKED -> handleClipboardChange()
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> handleClipboardChange()
         }
     }
 
@@ -63,42 +66,61 @@ class ClipboardAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) { }
+        handler.removeCallbacksAndMessages(null)
         serviceScope.cancel()
         instanceRef = null
         LogUtils.d("AccessibilityService", "服务已销毁")
     }
 
     private fun handleClipboardChange() {
-        serviceScope.launch(Dispatchers.IO) {
-            try {
-                val text = ClipboardUtils.getClipboardTextWithRetries(
-                    context = this@ClipboardAccessibilityService,
-                    attempts = 4,
-                    intervalMs = 120L
-                )
-                LogUtils.d("AccessibilityService", "检测到剪切板变化读取: ${text?.take(50)}")
-                if (!text.isNullOrEmpty() && text != lastClipboardContent) {
-                    lastClipboardContent = text
-                    try { repository.insertItem(text) } catch (_: Throwable) { }
-                    ClipboardMonitorService.start(applicationContext)
-                }
-            } catch (e: Exception) {
-                LogUtils.e("AccessibilityService", "处理剪切板失败", e)
-            }
+        val now = System.currentTimeMillis()
+        // 500ms 防抖
+        if (now - lastTriggerTime < 500L) {
+            return
         }
+        lastTriggerTime = now
+
+        // 检查是否内部写入
+        try {
+            val clip = clipboardManager.primaryClip
+            val label = clip?.description?.label?.toString()
+            if (label == "com.infiniteclipboard") {
+                LogUtils.d("AccessibilityService", "检测到内部写入，跳过")
+                return
+            }
+        } catch (_: Throwable) { }
+
+        // 延迟100ms后拉起前台Activity（等剪切板同步）
+        handler.postDelayed({
+            val prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
+            val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
+            
+            if (!enableShizuku) {
+                // Shizuku未启用，拉起透明Activity前台读取
+                val it = Intent(this@ClipboardAccessibilityService, TapRecordActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                }
+                try {
+                    startActivity(it)
+                    LogUtils.d("AccessibilityService", "延迟100ms后拉起前台读取Activity")
+                } catch (e: Exception) {
+                    LogUtils.e("AccessibilityService", "拉起Activity失败", e)
+                }
+            } else {
+                LogUtils.d("AccessibilityService", "Shizuku已启用，交由Shizuku处理")
+            }
+        }, 100L)
     }
 
     companion object {
         @Volatile
         private var instanceRef: WeakReference<ClipboardAccessibilityService>? = null
 
-        // 查找当前焦点可编辑节点
         private fun focusedEditableNode(svc: AccessibilityService?): AccessibilityNodeInfo? {
             val root = svc?.rootInActiveWindow ?: return null
             return root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
         }
 
-        // 读取当前选区范围（若无有效选区则返回 null）
         private fun getSelectionRange(node: AccessibilityNodeInfo?): Pair<Int, Int>? {
             if (node == null) return null
             val start = node.textSelectionStart
@@ -111,7 +133,6 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return null
         }
 
-        // 选中全部（兜底）
         private fun selectAll(node: AccessibilityNodeInfo): Boolean {
             return try {
                 val args = Bundle().apply {
@@ -122,7 +143,6 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } catch (_: Throwable) { false }
         }
 
-        // 设置文本（兜底）
         private fun setText(node: AccessibilityNodeInfo, text: String): Boolean {
             return try {
                 val args = Bundle().apply {
@@ -132,12 +152,10 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } catch (_: Throwable) { false }
         }
 
-        // 捕获节点文本（全量）
         private fun captureNodeText(node: AccessibilityNodeInfo?): String? {
             return node?.text?.toString()
         }
 
-        // 捕获选区文本（若存在选区）
         private fun captureSelectedText(node: AccessibilityNodeInfo?): String? {
             val full = node?.text?.toString() ?: return null
             val range = getSelectionRange(node) ?: return null
@@ -147,33 +165,26 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } else null
         }
 
-        // 复制：有选区→复制选区；无选区→自动全选后复制；无论系统广播是否触发，直接设置系统剪贴板并返回文本用于入库
         fun captureCopy(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
 
-            // 先尽量拿选区文本
             var textToRecord = captureSelectedText(node)
 
-            // 若无选区，尝试全选以准备复制
             if (textToRecord.isNullOrEmpty()) {
-                // 先读取全量文本作为备份
                 textToRecord = captureNodeText(node)
                 selectAll(node)
             }
 
-            // 尝试 COPY（即便控件不触发系统剪贴板，我们也会手动写入）
             node.performAction(AccessibilityNodeInfo.ACTION_COPY)
 
-            // 手动写系统剪贴板并返回
             if (!textToRecord.isNullOrEmpty()) {
                 ClipboardUtils.setClipboardText(svc, textToRecord)
+                LogUtils.clipboard("无障碍-复制", textToRecord)
             }
             return textToRecord
         }
 
-        // 剪切：有选区→剪切选区；无选区→自动全选后剪切；
-        // 如 ACTION_CUT 失败，则手动把被剪内容写入系统剪贴板，并用 SET_TEXT 置空或删除选区文本
         fun captureCut(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -182,34 +193,30 @@ class ClipboardAccessibilityService : AccessibilityService() {
             val sel = getSelectionRange(node)
 
             var cutText: String?
-            var cutOk: Boolean
 
             if (sel != null) {
                 val (s, e) = sel
                 cutText = if (s in 0..full.length && e in 0..full.length && s < e) full.substring(s, e) else ""
-                cutOk = node.performAction(AccessibilityNodeInfo.ACTION_CUT)
+                val cutOk = node.performAction(AccessibilityNodeInfo.ACTION_CUT)
                 if (!cutOk) {
-                    // 手动删除选区文本
                     val newText = full.removeRange(s, e.coerceAtMost(full.length))
                     setText(node, newText)
                 }
             } else {
-                // 无选区：剪切全部
                 cutText = full
-                cutOk = node.performAction(AccessibilityNodeInfo.ACTION_CUT)
+                val cutOk = node.performAction(AccessibilityNodeInfo.ACTION_CUT)
                 if (!cutOk) {
                     setText(node, "")
                 }
             }
 
             if (!cutText.isNullOrEmpty()) {
-                // 无论 ACTION_CUT 是否成功，手动同步系统剪贴板
                 ClipboardUtils.setClipboardText(svc, cutText)
+                LogUtils.clipboard("无障碍-剪切", cutText)
             }
             return cutText
         }
 
-        // 粘贴：优先 ACTION_PASTE；失败则直接 SET_TEXT（替换全部）
         fun performPaste(text: String?): Boolean {
             val svc = instanceRef?.get() ?: return false
             val node = focusedEditableNode(svc) ?: return false

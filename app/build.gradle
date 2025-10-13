@@ -31,12 +31,16 @@ android {
 
     buildFeatures {
         viewBinding true
+        aidl true
     }
 
     sourceSets {
         main {
             java {
                 exclude '**/merged_*.kt'
+            }
+            aidl {
+                srcDirs 'src/main/aidl'
             }
         }
     }

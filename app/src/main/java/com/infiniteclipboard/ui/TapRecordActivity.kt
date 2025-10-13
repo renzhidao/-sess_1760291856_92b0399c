@@ -1,6 +1,4 @@
 // 文件: app/src/main/java/com/infiniteclipboard/ui/TapRecordActivity.kt
-// 瞬时前台透明页（前台读取后立刻关闭）
-// 若工程已有该类且逻辑相同，可忽略本文件；此处确保存在、便于探针调用
 package com.infiniteclipboard.ui
 
 import android.os.Bundle
@@ -8,6 +6,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.utils.ClipboardUtils
+import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -17,18 +16,31 @@ class TapRecordActivity : AppCompatActivity() {
         overridePendingTransition(0, 0)
         super.onCreate(savedInstanceState)
     }
+    
     override fun onResume() {
         super.onResume()
         lifecycleScope.launch(Dispatchers.IO) {
+            // 增加重试：6次，间隔150ms
             val text = ClipboardUtils.getClipboardTextWithRetries(
-                this@TapRecordActivity, attempts = 4, intervalMs = 120L
+                this@TapRecordActivity, 
+                attempts = 6, 
+                intervalMs = 150L
             )
+            
+            LogUtils.clipboard("前台Activity", text)
+            
             if (!text.isNullOrEmpty()) {
                 try {
                     val repo = (application as ClipboardApplication).repository
-                    repo.insertItem(text)
-                } catch (_: Throwable) { }
+                    val id = repo.insertItem(text)
+                    LogUtils.d("TapRecordActivity", "前台入库成功 id=$id")
+                } catch (e: Throwable) {
+                    LogUtils.e("TapRecordActivity", "前台入库失败", e)
+                }
+            } else {
+                LogUtils.d("TapRecordActivity", "前台读取失败：内容为空")
             }
+            
             withContext(Dispatchers.Main) {
                 finish()
                 overridePendingTransition(0, 0)
