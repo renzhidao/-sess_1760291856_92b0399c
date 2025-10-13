@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// Shizuku 全局剪贴板监听（shell 权限）：通过反射调用 newProcess，避免 API 可见性变化导致编译错误
+// Shizuku 全局剪贴板监听（shell 权限）：反射 newProcess + 监听 Binder/权限回调，修复“未连接”误判
 package com.infiniteclipboard.service
 
 import android.content.Context
@@ -16,10 +16,36 @@ object ShizukuClipboardMonitor {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var monitorJob: Job? = null
     @Volatile private var monitorProc: Process? = null
+    @Volatile private var binderReady: Boolean = false
 
-    fun isAvailable(): Boolean {
-        return try { Shizuku.pingBinder() } catch (_: Throwable) { false }
+    fun init(context: Context) {
+        // 初始态
+        binderReady = safePing()
+        // Binder 连接/断开监听
+        Shizuku.addBinderReceivedListener {
+            binderReady = true
+            LogUtils.d("ShizukuMonitor", "Binder received")
+            val enabled = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                .getBoolean("shizuku_enabled", false)
+            if (enabled) start(context)
+        }
+        Shizuku.addBinderDeadListener {
+            binderReady = false
+            LogUtils.d("ShizukuMonitor", "Binder dead")
+        }
+        // 权限回调：授权后自动启动
+        Shizuku.addRequestPermissionResultListener { _, grantResult ->
+            if (grantResult == PackageManager.PERMISSION_GRANTED) {
+                context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                    .edit().putBoolean("shizuku_enabled", true).apply()
+                start(context)
+            }
+        }
     }
+
+    private fun safePing(): Boolean = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
+
+    fun isAvailable(): Boolean = binderReady || safePing()
 
     fun hasPermission(): Boolean {
         return try { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (_: Throwable) { false }
@@ -74,7 +100,6 @@ object ShizukuClipboardMonitor {
                     try { monitorProc?.destroy() } catch (_: Throwable) { }
                     monitorProc = null
                 }
-                // 进程异常退出，指数回退重启
                 attempt++
                 val backoff = (500L * attempt).coerceAtMost(5000L)
                 delay(backoff)

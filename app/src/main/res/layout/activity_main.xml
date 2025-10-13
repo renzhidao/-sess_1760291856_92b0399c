@@ -6,22 +6,14 @@
     android:orientation="vertical"
     android:background="@color/background">
 
+    <!-- 仅使用 Toolbar 自身的标题，移除内部 TextView，避免标题重复 -->
     <com.google.android.material.appbar.MaterialToolbar
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
         android:background="@color/purple_500"
         android:elevation="4dp"
-        android:theme="@style/ThemeOverlay.Material3.Dark">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            android:textColor="@color/white"
-            android:textSize="20sp"
-            android:textStyle="bold" />
-    </com.google.android.material.appbar.MaterialToolbar>
+        android:theme="@style/ThemeOverlay.Material3.Dark" />
 
     <LinearLayout
         android:layout_width="match_parent"

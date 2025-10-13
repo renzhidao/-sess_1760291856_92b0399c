@@ -1,5 +1,4 @@
 // 文件: app/src/main/java/com/infiniteclipboard/ui/MainActivity.kt
-// 文件: app/src/main/java/com/infiniteclipboard/ui/MainActivity.kt
 package com.infiniteclipboard.ui
 
 import android.Manifest
@@ -66,7 +65,7 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // 关键：绑定 Toolbar 才会显示右上角菜单
+        // 绑定 Toolbar，保证菜单显示，且避免标题重复（布局已移除内部 TextView）
         setSupportActionBar(binding.toolbar)
 
         LogUtils.init(this)
@@ -109,10 +108,7 @@ class MainActivity : AppCompatActivity() {
     private fun toggleShizuku() {
         val enabled = prefs.getBoolean("shizuku_enabled", false)
         if (!enabled) {
-            if (!ShizukuClipboardMonitor.isAvailable()) {
-                Toast.makeText(this, "Shizuku 未连接或不可用", Toast.LENGTH_LONG).show()
-                return
-            }
+            // 不再以 isAvailable 为前置条件（避免“已安装已连接但 ping 未就绪”的误判）
             if (!ShizukuClipboardMonitor.hasPermission()) {
                 ShizukuClipboardMonitor.requestPermission()
                 Toast.makeText(this, "请在Shizuku弹窗中授权后再次点击", Toast.LENGTH_LONG).show()
@@ -145,7 +141,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 return
             }
-            // 开启
             prefs.edit().putBoolean("edge_bar_enabled", true).apply()
             ClipboardMonitorService.start(this)
             val it = Intent(this, ClipboardMonitorService::class.java).apply {
@@ -154,7 +149,6 @@ class MainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(it) else startService(it)
             Toast.makeText(this, "边缘小条已开启", Toast.LENGTH_SHORT).show()
         } else {
-            // 关闭
             prefs.edit().putBoolean("edge_bar_enabled", false).apply()
             val it = Intent(this, ClipboardMonitorService::class.java).apply {
                 action = ClipboardMonitorService.ACTION_EDGE_BAR_DISABLE
