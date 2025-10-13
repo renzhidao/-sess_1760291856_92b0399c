@@ -3,16 +3,20 @@ package com.infiniteclipboard.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.accessibilityservice.GestureDescription
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Path
 import android.view.accessibility.AccessibilityEvent
 import com.infiniteclipboard.ClipboardApplication
+import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.lang.ref.WeakReference
 
 class ClipboardAccessibilityService : AccessibilityService() {
 
@@ -34,6 +38,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
         }
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
+        instanceRef = WeakReference(this)
         LogUtils.d("AccessibilityService", "辅助服务已启动，剪切板监听已注册")
     }
 
@@ -53,39 +58,44 @@ class ClipboardAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        try {
-            clipboardManager.removePrimaryClipChangedListener(clipboardListener)
-        } catch (_: Throwable) { }
+        try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) { }
         serviceScope.cancel()
+        instanceRef = null
         LogUtils.d("AccessibilityService", "服务已销毁")
     }
 
     private fun handleClipboardChange() {
-        try {
-            val clip = clipboardManager.primaryClip
-            if (clip == null || clip.itemCount <= 0) {
-                LogUtils.d("AccessibilityService", "剪切板为空或无项目")
-                return
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val text = ClipboardUtils.getClipboardTextWithRetries(
+                    context = this@ClipboardAccessibilityService,
+                    attempts = 4,
+                    intervalMs = 120L
+                )
+                if (!text.isNullOrEmpty() && text != lastClipboardContent) {
+                    lastClipboardContent = text
+                    try { repository.insertItem(text) } catch (_: Throwable) { }
+                }
+            } catch (e: Exception) {
+                LogUtils.e("AccessibilityService", "处理剪切板失败", e)
             }
-            val text = clip.getItemAt(0).text?.toString()
-            LogUtils.d("AccessibilityService", "检测到剪切板变化: ${text?.take(50)}")
-            if (!text.isNullOrEmpty() && text != lastClipboardContent) {
-                lastClipboardContent = text
-                saveClipboardContent(text)
-            }
-        } catch (e: Exception) {
-            LogUtils.e("AccessibilityService", "处理剪切板失败", e)
         }
     }
 
-    private fun saveClipboardContent(content: String) {
-        serviceScope.launch(Dispatchers.IO) {
-            try {
-                val id = repository.insertItem(content)
-                LogUtils.d("AccessibilityService", "保存成功，ID: $id, 内容: ${content.take(30)}")
-            } catch (e: Exception) {
-                LogUtils.e("AccessibilityService", "保存失败", e)
-            }
+    companion object {
+        @Volatile
+        private var instanceRef: WeakReference<ClipboardAccessibilityService>? = null
+
+        // 对外：注入一次轻点（屏幕绝对坐标）
+        fun dispatchTap(x: Float, y: Float): Boolean {
+            val svc = instanceRef?.get() ?: return false
+            return try {
+                val path = Path().apply { moveTo(x, y) }
+                val gesture = GestureDescription.Builder()
+                    .addStroke(GestureDescription.StrokeDescription(path, 0, 50))
+                    .build()
+                svc.dispatchGesture(gesture, null, null)
+            } catch (_: Throwable) { false }
         }
     }
 }

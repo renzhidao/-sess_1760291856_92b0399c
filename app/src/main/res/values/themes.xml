@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-
+<!-- 文件: app/src/main/res/values/themes.xml -->
 <resources>
     <style name="Theme.InfiniteClipboard" parent="Theme.Material3.Light.NoActionBar">
         <item name="colorPrimary">@color/purple_500</item>
@@ -16,5 +16,14 @@
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:backgroundDimEnabled">true</item>
         <item name="android:windowCloseOnTouchOutside">true</item>
+    </style>
+
+    <!-- 新增：全透明无动画主题，用于 TapRecordActivity 瞬时前台读取 -->
+    <style name="Theme.Transparent" parent="Theme.Material3.Light.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation</item>
     </style>
 </resources>

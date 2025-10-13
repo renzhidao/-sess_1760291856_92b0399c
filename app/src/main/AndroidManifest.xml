@@ -39,6 +39,15 @@
             android:exported="false"
             android:label="@string/log_viewer_title" />
 
+        <!-- 新增：瞬时前台透明页，用于前台读取剪贴板后立刻关闭 -->
+        <activity
+            android:name=".ui.TapRecordActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:finishOnTaskLaunch="true"
+            android:theme="@style/Theme.Transparent" />
+
         <service
             android:name=".service.ClipboardMonitorService"
             android:enabled="true"
