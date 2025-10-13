@@ -323,25 +323,26 @@ object ShizukuClipboardMonitor {
                 val pt = c.parameterTypes
                 if (pt.size == 3 && isInt(pt[0]) && isString(pt[1]) && isString(pt[2])) { ctor = c; break }
             }
-            if (ctor != null) {
-                ctor.newInstance(uid, pkg, tag)
-            } else {
-                for (c in ctors) {
-                    val pt = c.parameterTypes
-                    if (pt.size == 2 && isInt(pt[0]) && isString(pt[1])) {
-                        return c.newInstance(uid, pkg)
+            when {
+                ctor != null -> ctor.newInstance(uid, pkg, tag)
+                else -> {
+                    for (c in ctors) {
+                        val pt = c.parameterTypes
+                        if (pt.size == 2 && isInt(pt[0]) && isString(pt[1])) {
+                            return c.newInstance(uid, pkg)
+                        }
                     }
+                    val builderCls = try { Class.forName("android.content.AttributionSource\$Builder") } catch (_: Throwable) { null }
+                    if (builderCls != null) {
+                        val bCtor = builderCls.getConstructor(Int::class.javaPrimitiveType, String::class.java)
+                        val builder = bCtor.newInstance(uid, pkg)
+                        val setTag = builderCls.methods.firstOrNull { it.name == "setAttributionTag" && it.parameterTypes.size == 1 && isString(it.parameterTypes[0]) }
+                        if (setTag != null && tag != null) setTag.invoke(builder, tag)
+                        val build = builderCls.methods.firstOrNull { it.name == "build" && it.parameterCount == 0 }
+                        if (build != null) return build.invoke(builder)
+                    }
+                    null
                 }
-                val builderCls = try { Class.forName("android.content.AttributionSource\$Builder") } catch (_: Throwable) { null }
-                if (builderCls != null) {
-                    val bCtor = builderCls.getConstructor(Int::class.javaPrimitiveType, String::class.java)
-                    val builder = bCtor.newInstance(uid, pkg)
-                    val setTag = builderCls.methods.firstOrNull { it.name == "setAttributionTag" && it.parameterTypes.size == 1 && isString(it.parameterTypes[0]) }
-                    if (setTag != null && tag != null) setTag.invoke(builder, tag)
-                    val build = builderCls.methods.firstOrNull { it.name == "build" && it.parameterCount == 0 }
-                    if (build != null) return build.invoke(builder)
-                }
-                null
             }
         } catch (_: Throwable) { null }
     }
@@ -375,4 +376,6 @@ object ShizukuClipboardMonitor {
     private fun snippet(s: String?, max: Int = 120): String {
         if (s == null) return "null"
         val oneLine = s.replace("\r", "\\r").replace("\n", "\\n")
-        return if (oneLine.length <= max) oneLine 
+        return if (oneLine.length <= max) oneLine else oneLine.substring(0, max) + "…"
+    }
+}
