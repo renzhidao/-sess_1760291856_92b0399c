@@ -13,7 +13,7 @@
         android:background="@color/purple_500"
         android:elevation="4dp"
         android:theme="@style/ThemeOverlay.Material3.Dark">
-        
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -40,11 +40,10 @@
             android:textSize="14sp" />
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnLog"
+            android:id="@+id/btnKeyboard"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
-            android:text="@string/log_viewer"
+            android:text="@string/set_proxy_keyboard"
             style="@style/Widget.Material3.Button.TextButton" />
 
         <com.google.android.material.button.MaterialButton

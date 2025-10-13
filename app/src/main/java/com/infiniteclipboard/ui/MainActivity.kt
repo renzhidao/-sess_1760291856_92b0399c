@@ -29,7 +29,6 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.data.ClipboardEntity
@@ -78,7 +77,7 @@ class MainActivity : AppCompatActivity() {
         checkPermissions()
         observeData()
 
-        // 测试要求：确保前台服务启动
+        // 启动前台服务（满足测试、保持存活）
         ClipboardMonitorService.start(this)
     }
 
@@ -123,6 +122,37 @@ class MainActivity : AppCompatActivity() {
     private fun setupButtons() {
         binding.btnClearAll.setOnClickListener { showClearAllDialog() }
         binding.btnLog.setOnClickListener { startActivity(Intent(this, LogViewerActivity::class.java)) }
+        // 可见按钮：选择目标键盘（只存储偏好，不做静默切换）
+        binding.btnKeyboard.setOnClickListener { showProxyKeyboardPicker() }
+    }
+
+    private fun showProxyKeyboardPicker() {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        val list = imm.enabledInputMethodList
+        val currentPkg = packageName
+        val displayList = list.filter { it.packageName != currentPkg }
+        if (displayList.isEmpty()) {
+            Toast.makeText(this, "未找到可中转的键盘，请先启用其它键盘", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+            return
+        }
+        val labels = displayList.map { it.loadLabel(packageManager).toString() }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.pick_keyboard_title))
+            .setItems(labels) { _, which ->
+                val info: InputMethodInfo = displayList[which]
+                val id = info.id
+                val label = labels[which]
+                prefs.edit()
+                    .putString("target_ime_id", id)
+                    .putString("target_ime_label", label)
+                    .apply()
+                Toast.makeText(this, getString(R.string.proxy_keyboard_saved, label), Toast.LENGTH_LONG).show()
+                // 引导用户把“剪切板代理键盘”设为默认（一次性）
+                startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     private fun observeData() {
@@ -177,10 +207,10 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle(R.string.clear_all)
             .setMessage("确定要清空所有剪切板记录吗？")
-            .setPositiveButton("确定") { _, _ ->
+            .setPositiveButton(R.string.confirm) { _, _ ->
                 lifecycleScope.launch { repository.deleteAll() }
             }
-            .setNegativeButton("取消", null)
+            .setNegativeButton(R.string.cancel, null)
             .show()
     }
 
@@ -192,14 +222,11 @@ class MainActivity : AppCompatActivity() {
     private fun checkPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.POST_NOTIFICATIONS
+                    this, Manifest.permission.POST_NOTIFICATIONS
                 ) != PackageManager.PERMISSION_GRANTED
             ) {
                 ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    PERMISSION_REQUEST_CODE
+                    this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), PERMISSION_REQUEST_CODE
                 )
             }
         }
@@ -229,39 +256,10 @@ class MainActivity : AppCompatActivity() {
             }) return true
 
         val flat = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         )
         val expected2 = "${packageName}/${ClipboardAccessibilityService::class.java.name}"
         return flat?.split(':')?.any { it.equals(expected2, ignoreCase = true) } == true
-    }
-
-    private fun showProxyKeyboardPicker() {
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        val list = imm.enabledInputMethodList
-        val currentPkg = packageName
-        val displayList = list.filter { it.packageName != currentPkg }
-        if (displayList.isEmpty()) {
-            Toast.makeText(this, "未找到可中转的键盘，请先启用其它键盘", Toast.LENGTH_LONG).show()
-            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
-            return
-        }
-        val labels = displayList.map { it.loadLabel(packageManager).toString() }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.pick_keyboard_title))
-            .setItems(labels) { _, which ->
-                val info: InputMethodInfo = displayList[which]
-                val id = info.id
-                val label = labels[which]
-                prefs.edit()
-                    .putString("target_ime_id", id)
-                    .putString("target_ime_label", label)
-                    .apply()
-                Toast.makeText(this, getString(R.string.proxy_keyboard_saved, label), Toast.LENGTH_LONG).show()
-                startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
-            }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
     }
 
     private fun exportToUri(uri: Uri) {
@@ -335,7 +333,5 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    companion object {
-        private const val PERMISSION_REQUEST_CODE = 1001
-    }
+    companion object { private const val PERMISSION_REQUEST_CODE = 1001 }
 }
