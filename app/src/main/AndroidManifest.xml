@@ -39,7 +39,6 @@
             android:exported="false"
             android:label="@string/log_viewer_title" />
 
-        <!-- 瞬时前台透明页（采集用） -->
         <activity
             android:name=".ui.TapRecordActivity"
             android:exported="false"
@@ -75,7 +74,6 @@
             </intent-filter>
         </receiver>
 
-        <!-- Shizuku Provider -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
