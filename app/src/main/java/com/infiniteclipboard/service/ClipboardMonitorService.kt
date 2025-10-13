@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardMonitorService.kt
-// 前台监控服务 + 屏幕边缘小条（剪切/复制/粘贴）
+// 前台监控服务 + 屏幕边缘小条（剪切/复制/粘贴/测试）
 // 小条只拦截自身区域的触摸；不影响其他区域的滑动/输入
 package com.infiniteclipboard.service
 
@@ -27,6 +27,7 @@ import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.ui.ClipboardWindowActivity
 import com.infiniteclipboard.ui.TapRecordActivity
+import com.infiniteclipboard.ui.TestProbeActivity
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.CoroutineScope
@@ -90,12 +91,10 @@ class ClipboardMonitorService : Service() {
         try {
             val clip = clipboardManager.primaryClip
             val label = try { clip?.description?.label?.toString() } catch (_: Throwable) { null }
-            // 我们自己的按钮写入的剪贴板，标签为 com.infiniteclipboard → 跳过前台拉起，避免重复/打扰
             if (label == "com.infiniteclipboard") {
                 LogUtils.d("ClipboardService", "检测到内部写入的剪贴板，跳过前台采集")
                 return
             }
-            // 对于第三方应用写入：必定拉起瞬时前台读取，保证在严格ROM上也能命中
             val it = Intent(this, TapRecordActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
             }
@@ -105,7 +104,7 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 测试要求的方法保留（主要用于按钮直录或其他路径调用）
+    // 测试要求的方法保留（按钮直录或其他路径调用）
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -181,10 +180,12 @@ class ClipboardMonitorService : Service() {
             val btnCut = makeBtn("剪切")
             val btnCopy = makeBtn("复制")
             val btnPaste = makeBtn("粘贴")
+            val btnTest = makeBtn("测试") // 新增：测试按钮
 
             addView(btnCut)
             addView(btnCopy)
             addView(btnPaste)
+            addView(btnTest)
 
             // 拖动小条（只改变垂直位置）。返回 false 以便子按钮正常接收点击。
             setOnTouchListener(object : View.OnTouchListener {
@@ -232,6 +233,16 @@ class ClipboardMonitorService : Service() {
                 serviceScope.launch(Dispatchers.IO) {
                     val latest = try { repository.getAllOnce().firstOrNull()?.content } catch (_: Throwable) { null }
                     ClipboardAccessibilityService.performPaste(latest)
+                }
+            }
+            // 新增：测试按钮 -> 打开测试探针页
+            btnTest.setOnClickListener {
+                serviceScope.launch(Dispatchers.Main) {
+                    try {
+                        val it = Intent(this@ClipboardMonitorService, TestProbeActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(it)
+                    } catch (_: Throwable) { }
                 }
             }
         }
