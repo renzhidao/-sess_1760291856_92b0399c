@@ -2,6 +2,7 @@
 package com.infiniteclipboard.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipboardManager
 import android.content.Context
 import android.view.accessibility.AccessibilityEvent
@@ -26,12 +27,25 @@ class ClipboardAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        // 提高可见性（获取视图ID/包含不重要视图），便于后续扩展
+        serviceInfo = serviceInfo.apply {
+            flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                    AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+        }
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
         LogUtils.d("AccessibilityService", "辅助服务已启动，剪切板监听已注册")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // 尝试在常见事件上触发一次检查（有些 ROM 在事件回调时可读取剪贴板）
+        when (event?.eventType) {
+            AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_FOCUSED,
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_CLICKED -> handleClipboardChange()
+        }
     }
 
     override fun onInterrupt() {
@@ -40,7 +54,9 @@ class ClipboardAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        clipboardManager.removePrimaryClipChangedListener(clipboardListener)
+        try {
+            clipboardManager.removePrimaryClipChangedListener(clipboardListener)
+        } catch (_: Throwable) {}
         serviceScope.cancel()
         LogUtils.d("AccessibilityService", "服务已销毁")
     }
@@ -48,26 +64,15 @@ class ClipboardAccessibilityService : AccessibilityService() {
     private fun handleClipboardChange() {
         try {
             val clip = clipboardManager.primaryClip
-            if (clip == null) {
-                LogUtils.d("AccessibilityService", "剪切板为空")
+            if (clip == null || clip.itemCount <= 0) {
+                LogUtils.d("AccessibilityService", "剪切板为空或无项目")
                 return
             }
-
-            if (clip.itemCount <= 0) {
-                LogUtils.d("AccessibilityService", "剪切板项目数为0")
-                return
-            }
-
             val text = clip.getItemAt(0).text?.toString()
             LogUtils.d("AccessibilityService", "检测到剪切板变化: ${text?.take(50)}")
-
-            if (!text.isNullOrEmpty()) {
-                if (text != lastClipboardContent) {
-                    lastClipboardContent = text
-                    saveClipboardContent(text)
-                } else {
-                    LogUtils.d("AccessibilityService", "重复内容，跳过")
-                }
+            if (!text.isNullOrEmpty() && text != lastClipboardContent) {
+                lastClipboardContent = text
+                saveClipboardContent(text)
             }
         } catch (e: Exception) {
             LogUtils.e("AccessibilityService", "处理剪切板失败", e)

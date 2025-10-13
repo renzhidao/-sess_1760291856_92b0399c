@@ -2,8 +2,10 @@
 package com.infiniteclipboard.ui
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -17,6 +19,7 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
+import android.view.accessibility.AccessibilityManager
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -29,6 +32,7 @@ import com.infiniteclipboard.R
 import com.infiniteclipboard.data.ClipboardEntity
 import com.infiniteclipboard.databinding.ActivityMainBinding
 import com.infiniteclipboard.service.ClipboardMonitorService
+import com.infiniteclipboard.service.ClipboardAccessibilityService
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
@@ -200,7 +204,6 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         }
-        
         checkAccessibilityPermission()
     }
 
@@ -217,13 +220,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // 更稳的辅助服务检测，避免已开启仍反复提示
     private fun isAccessibilityServiceEnabled(): Boolean {
-        val serviceName = "${packageName}/.service.ClipboardAccessibilityService"
-        val enabledServices = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-        )
-        return enabledServices?.contains(serviceName) == true
+        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+        val enabled = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+        val expected = ComponentName(this, ClipboardAccessibilityService::class.java).flattenToString()
+        if (enabled.any {
+                val si = it.resolveInfo.serviceInfo
+                "${si.packageName}/${si.name}".equals(expected, ignoreCase = true)
+            }) return true
+
+        // 备用：读取系统设置项
+        val flat = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+        val expected2 = "${packageName}/${ClipboardAccessibilityService::class.java.name}"
+        return flat?.split(':')?.any { it.equals(expected2, ignoreCase = true) } == true
     }
 
     private fun exportToUri(uri: Uri) {
