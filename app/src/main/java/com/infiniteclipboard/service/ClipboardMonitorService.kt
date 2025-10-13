@@ -92,7 +92,7 @@ class ClipboardMonitorService : Service() {
                 )
                 if (!text.isNullOrEmpty() && text != lastClipboardContent) {
                     lastClipboardContent = text
-                    try { repository.insertItem(text) } catch (_: Throwable) { }
+                    saveClipboardContent(text)
                 }
             } catch (e: Exception) {
                 LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
@@ -151,7 +151,7 @@ class ClipboardMonitorService : Service() {
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0x33000000) // 半透明背景，避免视觉干扰
+            setBackgroundColor(0x33000000) // 半透明背景
             val pad = dp(4f)
             setPadding(pad, pad, pad, pad)
 
@@ -200,7 +200,10 @@ class ClipboardMonitorService : Service() {
                             val h = resources.displayMetrics.heightPixels
                             val viewH = v.height
                             lp.y = max(-h / 2 + viewH / 2, min(h / 2 - viewH / 2, lp.y))
-                            try { wm.updateViewLayout(container, lp) } catch (_: Throwable) { }
+                            try {
+                                // 使用当前触摸的视图 v 更新布局，避免未解析的引用
+                                wm.updateViewLayout(v, lp)
+                            } catch (_: Throwable) { }
                             return true
                         }
                         else -> return false
