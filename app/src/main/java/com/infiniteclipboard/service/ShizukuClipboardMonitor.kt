@@ -1,10 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
 // Shizuku 全局剪贴板监听（Binder 版，替代 cmd）：通过 IClipboard 轮询读取，ROM 无需支持 `cmd clipboard`
-// 特性：
-// - 仅在 Shizuku 已连接且已授权时运行
-// - 反射绑定 IClipboard 并调用 getPrimaryClip(…)，兼容多签名 (String,int)/(String)/()
-// - 解析 ClipData 为纯文本；内容变更才入库
-// - 心跳日志；自动重试与 Binder 重新获取
 package com.infiniteclipboard.service
 
 import android.content.ClipData
@@ -18,7 +13,7 @@ import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 import rikka.shizuku.Shizuku
-import rikka.shizuku.system.server.SystemServiceHelper
+import rikka.shizuku.SystemServiceHelper // 修复导入路径：rikka.shizuku.SystemServiceHelper（而非 rikka.shizuku.system.server）
 import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicLong
 
