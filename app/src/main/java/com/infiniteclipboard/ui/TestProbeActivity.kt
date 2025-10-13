@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/ui/TestProbeActivity.kt
-// 测试探针页：一键开始 -> 同时启用多路探测剪贴板变化（监听/轮询/瞬时前台）直到命中，显示命中路径
+// 测试探针页：一键开始 -> 多路探测剪贴板变化（监听/轮询/瞬时前台）直到命中，显示命中路径
 package com.infiniteclipboard.ui
 
 import android.content.ClipboardManager
@@ -7,16 +7,11 @@ import android.content.Context
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.databinding.ActivityTestProbeBinding
 import com.infiniteclipboard.service.ClipboardMonitorService
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 
 class TestProbeActivity : AppCompatActivity() {
 
@@ -46,7 +41,6 @@ class TestProbeActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 视图绑定（使用 viewBinding）
         binding = ActivityTestProbeBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
@@ -91,13 +85,12 @@ class TestProbeActivity : AppCompatActivity() {
                     changedText = now
                 }
 
-                // 如果还未命中，周期性（每800ms）触发一次瞬时前台读取
+                // 周期性（每800ms）触发一次瞬时前台读取（若尚未命中）
                 val nowTs = System.currentTimeMillis()
                 if (changedText == null && nowTs - lastFrontAt >= 800L) {
                     try {
-                        // 使用瞬时前台采集（TapRecordActivity由工程已有）
-                        val it = android.content.Intent(this@TestProbeActivity, TapRecordActivity::class.java)
-                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                        val it = Intent(this@TestProbeActivity, TapRecordActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                         withContext(Dispatchers.Main) { startActivity(it) }
                         // 等待采集完成
                         delay(260L)
@@ -118,7 +111,7 @@ class TestProbeActivity : AppCompatActivity() {
                     break
                 }
 
-                // 超时保护（例如30秒），防止无限等待
+                // 超时保护（30秒）
                 if (nowTs - startTs > 30_000L) {
                     withContext(Dispatchers.Main) {
                         logLine("超时未检测到变更，请确认目标App是否写入系统剪贴板")
@@ -133,7 +126,7 @@ class TestProbeActivity : AppCompatActivity() {
             stopProbe()
         }
 
-        logLine("开始探测：请切换到目标App执行复制/剪切，然后返回查看结果")
+        logLine("开始探测：请在目标App执行复制/剪切，然后返回查看结果")
     }
 
     private fun stopProbe() {
@@ -149,13 +142,13 @@ class TestProbeActivity : AppCompatActivity() {
         else sb.append("结果：已检测到剪贴板变化\n\n")
 
         sb.append("命中路径：\n")
-        sb.append(" - 监听器 OnPrimaryClipChanged: ").append(if (listenerHit) "是" else "否").append('\n')
-        sb.append(" - 轮询读取 Poll: ").append(if (pollHit) "是" else "否").append('\n')
-        sb.append(" - 瞬时前台 Front: ").append(if (frontHit) "是" else "否").append('\n\n')
+        sb.append(" - 监听器 OnPrimaryClipChanged: ").append(if (listenerHit) "是" else "否").append("\n")
+        sb.append(" - 轮询读取 Poll: ").append(if (pollHit) "是" else "否").append("\n")
+        sb.append(" - 瞬时前台 Front: ").append(if (frontHit) "是" else "否").append("\n\n")
 
         sb.append("变化内容（前80字符）：\n")
         val txt = changedText ?: "(空)"
-        sb.append(txt.take(80)).append('\n')
+        sb.append(txt.take(80)).append("\n")
 
         binding.tvResult.text = sb.toString()
         LogUtils.d("TestProbe", sb.toString())
