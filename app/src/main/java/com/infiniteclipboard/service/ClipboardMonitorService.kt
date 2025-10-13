@@ -160,14 +160,17 @@ class ClipboardMonitorService : Service() {
             LogUtils.d("ClipboardService", "无悬浮窗权限，无法显示悬浮小窗")
             return
         }
-        // 修复变量名与 Intent.type 冲突：使用 wmType 避免与 Intent.apply{ type= } 冲突
+        // 修复与 Intent.type 冲突：避免使用变量名 type
         val wmType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
 
+        val screenW = resources.displayMetrics.widthPixels
+        val desiredW = (screenW * 0.9f).toInt() // 90% 屏宽，观感更佳
+
         val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
+            desiredW,
             WindowManager.LayoutParams.WRAP_CONTENT,
             wmType,
             // 可点击、可滚动；窗口外触摸不拦截
@@ -185,6 +188,10 @@ class ClipboardMonitorService : Service() {
         val rv = v.findViewById<RecyclerView>(R.id.recyclerView)
         val close = v.findViewById<View>(R.id.btnClose)
 
+        // 更紧凑的列表体验
+        rv.setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
+        rv.clipToPadding = false
+
         val adapter = ClipboardAdapter(
             onCopyClick = { item ->
                 ClipboardUtils.setClipboardText(this, item.content)
@@ -199,7 +206,7 @@ class ClipboardMonitorService : Service() {
             onShareClick = { item ->
                 try {
                     val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                        this.type = "text/plain" // 显式使用接收者，避免与外部变量冲突
+                        this.type = "text/plain"
                         putExtra(Intent.EXTRA_TEXT, item.content)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }

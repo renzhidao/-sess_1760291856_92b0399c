@@ -65,12 +65,8 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // 绑定 Toolbar，保证菜单显示，且避免标题重复（布局已移除内部 TextView）
         setSupportActionBar(binding.toolbar)
-
         LogUtils.init(this)
-        LogUtils.d("MainActivity", "应用启动")
-
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
         setupRecyclerView()
@@ -79,13 +75,14 @@ class MainActivity : AppCompatActivity() {
         checkPermissions()
         observeData()
 
-        // 启动前台服务（保持存活）
+        // 初始化 Shizuku 回调
+        ShizukuClipboardMonitor.init(this)
+
         ClipboardMonitorService.start(this)
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.menu_main, menu)
-        // 根据当前状态更新标题
         val shizukuEnabled = prefs.getBoolean("shizuku_enabled", false)
         menu.findItem(R.id.action_shizuku_toggle)?.title =
             if (shizukuEnabled) "关闭Shizuku全局监听" else "开启Shizuku全局监听"
@@ -108,21 +105,23 @@ class MainActivity : AppCompatActivity() {
     private fun toggleShizuku() {
         val enabled = prefs.getBoolean("shizuku_enabled", false)
         if (!enabled) {
-            // 不再以 isAvailable 为前置条件（避免“已安装已连接但 ping 未就绪”的误判）
-            if (!ShizukuClipboardMonitor.hasPermission()) {
-                ShizukuClipboardMonitor.requestPermission()
-                Toast.makeText(this, "请在Shizuku弹窗中授权后再次点击", Toast.LENGTH_LONG).show()
-                return
+            // 确保在 Binder 就绪后发起权限请求（主线程）
+            ShizukuClipboardMonitor.ensurePermission(this) { granted ->
+                if (granted) {
+                    prefs.edit().putBoolean("shizuku_enabled", true).apply()
+                    ShizukuClipboardMonitor.start(this)
+                    Toast.makeText(this, "已开启 Shizuku 全局监听", Toast.LENGTH_SHORT).show()
+                    invalidateOptionsMenu()
+                } else {
+                    Toast.makeText(this, "Shizuku 未授权或未连接", Toast.LENGTH_LONG).show()
+                }
             }
-            prefs.edit().putBoolean("shizuku_enabled", true).apply()
-            ShizukuClipboardMonitor.start(this)
-            Toast.makeText(this, "已开启 Shizuku 全局监听", Toast.LENGTH_SHORT).show()
         } else {
             prefs.edit().putBoolean("shizuku_enabled", false).apply()
             ShizukuClipboardMonitor.stop()
             Toast.makeText(this, "已关闭 Shizuku 全局监听", Toast.LENGTH_SHORT).show()
+            invalidateOptionsMenu()
         }
-        invalidateOptionsMenu()
     }
 
     private fun toggleEdgeBar() {

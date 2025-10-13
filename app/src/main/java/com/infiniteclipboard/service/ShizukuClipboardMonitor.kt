@@ -1,9 +1,11 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// Shizuku 全局剪贴板监听（shell 权限）：反射 newProcess + 监听 Binder/权限回调，修复“未连接”误判
+// Shizuku 全局剪贴板监听（shell 权限）：反射 newProcess + 监听 Binder/权限回调，修复“未连接/不弹窗”问题
 package com.infiniteclipboard.service
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
@@ -18,10 +20,10 @@ object ShizukuClipboardMonitor {
     @Volatile private var monitorProc: Process? = null
     @Volatile private var binderReady: Boolean = false
 
+    private const val REQ_CODE = 10086
+
     fun init(context: Context) {
-        // 初始态
         binderReady = safePing()
-        // Binder 连接/断开监听
         Shizuku.addBinderReceivedListener {
             binderReady = true
             LogUtils.d("ShizukuMonitor", "Binder received")
@@ -33,13 +35,11 @@ object ShizukuClipboardMonitor {
             binderReady = false
             LogUtils.d("ShizukuMonitor", "Binder dead")
         }
-        // 权限回调：授权后自动启动
+        // 权限结果回调（兜底自动开启）
         Shizuku.addRequestPermissionResultListener { _, grantResult ->
-            if (grantResult == PackageManager.PERMISSION_GRANTED) {
-                context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-                    .edit().putBoolean("shizuku_enabled", true).apply()
-                start(context)
-            }
+            val granted = grantResult == PackageManager.PERMISSION_GRANTED
+            LogUtils.d("ShizukuMonitor", "permission result: $granted")
+            if (granted) start(context)
         }
     }
 
@@ -51,11 +51,30 @@ object ShizukuClipboardMonitor {
         return try { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (_: Throwable) { false }
     }
 
-    fun requestPermission() {
-        try {
-            if (hasPermission()) return
-            Shizuku.requestPermission(10086)
-        } catch (_: Throwable) { }
+    // 保证在主线程触发请求；若 Binder 未就绪则等待收到后再请求
+    fun ensurePermission(context: Context, onResult: (Boolean) -> Unit) {
+        if (hasPermission()) {
+            onResult(true)
+            return
+        }
+        val post = { Shizuku.requestPermission(REQ_CODE) }
+        val deliver: (Boolean) -> Unit = { onResult(it) }
+
+        if (isAvailable()) {
+            Handler(Looper.getMainLooper()).post { post() }
+        } else {
+            Shizuku.addBinderReceivedListener(object : Shizuku.OnBinderReceivedListener {
+                override fun onBinderReceived() {
+                    Shizuku.removeBinderReceivedListener(this)
+                    Handler(Looper.getMainLooper()).post { post() }
+                }
+            })
+        }
+        // 同步回调在 addRequestPermissionResultListener 中（init 已注册）
+        // 若用户拒绝，回调 deliver(false) 由外层根据 hasPermission() 复查
+        Handler(Looper.getMainLooper()).postDelayed({
+            deliver(hasPermission())
+        }, 1200L)
     }
 
     fun start(context: Context) {
@@ -129,7 +148,7 @@ object ShizukuClipboardMonitor {
             }
         } catch (e: Throwable) {
             LogUtils.e("ShizukuMonitor", "get 失败", e)
-            null
+            return null
         }
     }
 
