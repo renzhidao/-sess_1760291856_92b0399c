@@ -1,4 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/ui/TapRecordActivity.kt
+// TapRecordActivity - 瞬时前台透明页（前台读取后立刻关闭）
 package com.infiniteclipboard.ui
 
 import android.os.Bundle
@@ -13,19 +14,21 @@ import kotlinx.coroutines.withContext
 class TapRecordActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 透明无界面，无动画
         overridePendingTransition(0, 0)
         super.onCreate(savedInstanceState)
     }
 
     override fun onResume() {
         super.onResume()
-        // 前台态，读取并写库，然后立即关闭
         lifecycleScope.launch(Dispatchers.IO) {
-            val text = ClipboardUtils.getClipboardTextWithRetries(this@TapRecordActivity, attempts = 4, intervalMs = 120L)
+            val text = ClipboardUtils.getClipboardTextWithRetries(
+                this@TapRecordActivity, attempts = 4, intervalMs = 120L
+            )
             if (!text.isNullOrEmpty()) {
-                val repo = (application as ClipboardApplication).repository
-                try { repo.insertItem(text) } catch (_: Throwable) { }
+                try {
+                    val repo = (application as ClipboardApplication).repository
+                    repo.insertItem(text)
+                } catch (_: Throwable) { }
             }
             withContext(Dispatchers.Main) {
                 finish()

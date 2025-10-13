@@ -1,4 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardMonitorService.kt
+// ClipboardMonitorService（修复：改为“复制后短时一次性透明层”；只拦轻点；滑动/长按不处理）
 package com.infiniteclipboard.service
 
 import android.app.Notification
@@ -31,7 +32,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.math.abs
 import kotlin.math.hypot
 
 class ClipboardMonitorService : Service() {
@@ -43,10 +43,11 @@ class ClipboardMonitorService : Service() {
     private var lastClipboardContent: String? = null
     private var isPaused: Boolean = false
 
-    // 悬浮全屏透明层
+    // 一次性透明层（复制后短时出现）
     private lateinit var wm: WindowManager
     private var overlayView: View? = null
     private var overlayLp: WindowManager.LayoutParams? = null
+    private var overlayShowing = false
 
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         if (!isPaused) handleClipboardChange()
@@ -60,8 +61,8 @@ class ClipboardMonitorService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
-        ensureOverlay()
-        LogUtils.d("ClipboardService", "服务已启动，监听器已注册 + 透明层就绪")
+        prepareOverlay() // 预创建视图（默认不显示）
+        LogUtils.d("ClipboardService", "服务已启动，监听器已注册")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -78,7 +79,7 @@ class ClipboardMonitorService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         clipboardManager.removePrimaryClipChangedListener(clipboardListener)
-        removeOverlay()
+        removeOverlay(force = true)
         serviceScope.cancel()
     }
 
@@ -98,6 +99,8 @@ class ClipboardMonitorService : Service() {
                 } else {
                     LogUtils.d("ClipboardService", "重复内容，跳过")
                 }
+                // 复制后：短时显示一次性透明层，等待“下一次轻点”
+                showOverlayOnce()
             }
         } catch (e: Exception) {
             LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
@@ -128,9 +131,9 @@ class ClipboardMonitorService : Service() {
 
     private fun togglePause() { isPaused = !isPaused }
 
-    // ========== 全屏透明层（拦截轻点 -> 瞬时前台 -> 透传） ==========
+    // ========== 一次性透明层（仅拦“轻点”，滑动/长按不处理；出现后点一次即消失） ==========
 
-    private fun ensureOverlay() {
+    private fun prepareOverlay() {
         if (overlayView != null) return
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -138,27 +141,31 @@ class ClipboardMonitorService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else
-                WindowManager.LayoutParams.TYPE_PHONE,
+                @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
+            // 不获取焦点；仅在显示时接管触控
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
         }
+
         val frame = FrameLayout(this).apply {
-            // 极细边框 + 左上角水印（可后续改为设置开关）
+            // 极细边框 + 左上角淡水印（默认开；以后可加设置开关）
             setBackgroundResource(R.drawable.overlay_border)
             addView(TextView(context).apply {
                 text = "轻触记录"
                 setTextColor(0x55FFFFFF.toInt())
                 textSize = 10f
-                setPadding((8 * resources.displayMetrics.density).toInt(), (6 * resources.displayMetrics.density).toInt(), 0, 0)
+                val pad = (8 * resources.displayMetrics.density).toInt()
+                setPadding(pad, pad, pad, pad)
             }, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT
             ).apply { gravity = Gravity.TOP or Gravity.START })
 
+            // 只判定“轻点”：移动 < 10dp 且按压 < 220ms
             val touchSlop = 10f * resources.displayMetrics.density
             var downX = 0f
             var downY = 0f
@@ -167,6 +174,7 @@ class ClipboardMonitorService : Service() {
             var downTime = 0L
             var moved = false
 
+            visibility = View.GONE // 默认不显示
             setOnTouchListener { _, ev ->
                 when (ev.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -174,7 +182,7 @@ class ClipboardMonitorService : Service() {
                         downRawX = ev.rawX; downRawY = ev.rawY
                         downTime = SystemClock.uptimeMillis()
                         moved = false
-                        true
+                        true // 拦下按，等待判定
                     }
                     MotionEvent.ACTION_MOVE -> {
                         val dx = ev.x - downX
@@ -188,14 +196,18 @@ class ClipboardMonitorService : Service() {
                         val dt = SystemClock.uptimeMillis() - downTime
                         val isClick = !moved && dt < 220
                         if (isClick) {
+                            // 轻点：记录 + 透传
                             handleGlobalTap(downRawX, downRawY)
                         }
+                        // 无论轻点还是滑动/长按，点一次即消失（一次性）
+                        removeOverlay(force = false)
                         true
                     }
                     else -> true
                 }
             }
         }
+
         try {
             wm.addView(frame, lp)
             overlayView = frame
@@ -203,18 +215,34 @@ class ClipboardMonitorService : Service() {
         } catch (_: Throwable) { }
     }
 
-    private fun removeOverlay() {
+    private fun showOverlayOnce(timeoutMs: Long = 1500L) {
         val v = overlayView ?: return
-        try { wm.removeViewImmediate(v) } catch (_: Throwable) { }
-        overlayView = null
-        overlayLp = null
+        if (overlayShowing) return
+        try {
+            v.visibility = View.VISIBLE
+            overlayShowing = true
+            // 超时自动消失（未点的情况）
+            serviceScope.launch(Dispatchers.Main) {
+                delay(timeoutMs)
+                removeOverlay(force = false)
+            }
+        } catch (_: Throwable) { }
+    }
+
+    private fun removeOverlay(force: Boolean) {
+        val v = overlayView ?: return
+        if (!overlayShowing && !force) return
+        try {
+            v.visibility = View.GONE
+        } catch (_: Throwable) { }
+        overlayShowing = false
     }
 
     private fun handleGlobalTap(rawX: Float, rawY: Float) {
-        // 1) 先移除透明层，避免后续注入被自己吃掉
-        removeOverlay()
+        // 1) 先“消失”，避免把我们自己注入的轻点再吃掉
+        removeOverlay(force = false)
 
-        // 2) 启动透明前台 Activity，完成读取并立即关闭
+        // 2) 启动透明前台 Activity，完成读取并立即关闭（无跳转感）
         try {
             val it = Intent(this, TapRecordActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
@@ -222,14 +250,12 @@ class ClipboardMonitorService : Service() {
             startActivity(it)
         } catch (_: Throwable) {}
 
-        // 3) 延迟短时间，回到底层后注入这一下，再恢复透明层
+        // 3) 短延迟：等回到底层后，注入同坐标轻点（透传）
         serviceScope.launch(Dispatchers.Main) {
             try {
                 delay(220L)
                 ClipboardAccessibilityService.dispatchTap(rawX, rawY)
             } catch (_: Throwable) { }
-            delay(40L)
-            ensureOverlay()
         }
     }
 

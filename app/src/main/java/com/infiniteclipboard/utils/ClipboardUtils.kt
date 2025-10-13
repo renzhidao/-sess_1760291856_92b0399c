@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/utils/ClipboardUtils.kt
-// ClipboardUtils - 工具类
+// ClipboardUtils - 工具类（增强：coerceToText + 重试 + 多Item合并）
 package com.infiniteclipboard.utils
 
 import android.content.ClipData
@@ -10,11 +10,10 @@ import android.os.SystemClock
 object ClipboardUtils {
 
     fun getClipboardText(context: Context): String? {
-        // 统一走更鲁棒的实现
         return getClipboardTextRobust(context)
     }
 
-    // 更鲁棒：遍历所有 Item，优先 coerceToText，兼容 URI/HTML/Intent 等非常规来源
+    // 兼容非常规来源：优先 coerceToText，再回退到 item.text
     fun getClipboardTextRobust(context: Context): String? {
         return try {
             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -25,7 +24,7 @@ object ClipboardUtils {
         }
     }
 
-    // 带短延迟重试：适配“回调先到、内容稍后可读”的时序差异
+    // 短延迟重试：适配部分系统“回调先到、内容稍后可读”的时序
     fun getClipboardTextWithRetries(
         context: Context,
         attempts: Int = 4,
@@ -62,9 +61,9 @@ object ClipboardUtils {
     }
 
     fun setClipboardText(context: Context, text: String) {
-        val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = ClipData.newPlainText("text", text)
-        clipboardManager.setPrimaryClip(clip)
+        cm.setPrimaryClip(clip)
     }
 
     fun formatSize(bytes: Int): String {
