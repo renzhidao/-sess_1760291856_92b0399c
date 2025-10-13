@@ -21,4 +21,9 @@
         android:id="@+id/action_shizuku_toggle"
         android:title="@string/shizuku_toggle"
         android:showAsAction="never|withText" />
+    <!-- 边缘小条开关 -->
+    <item
+        android:id="@+id/action_edge_bar_toggle"
+        android:title="@string/edge_bar_toggle"
+        android:showAsAction="never|withText" />
 </menu>

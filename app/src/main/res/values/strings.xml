@@ -54,7 +54,7 @@
     <string name="accessibility_permission_message">为了在后台监听剪切板，需要开启辅助功能权限。\n\n请在设置中找到“无限剪切板”并开启。</string>
     <string name="accessibility_service_description">用于监听系统剪切板变化，自动保存复制的内容。不会收集任何隐私信息。</string>
 
-    <!-- 代理键盘 -->
+    <!-- 代理键盘（保留字符串，不对外显示） -->
     <string name="ime_proxy_name">剪切板代理键盘</string>
     <string name="ime_subtype_label">代理</string>
     <string name="ime_switch_now">切换</string>
@@ -69,4 +69,9 @@
 
     <!-- Shizuku 菜单 -->
     <string name="shizuku_toggle">Shizuku全局监听</string>
+
+    <!-- 边缘小条菜单 -->
+    <string name="edge_bar_toggle">边缘小条</string>
+    <string name="edge_bar_enable">显示边缘小条</string>
+    <string name="edge_bar_disable">隐藏边缘小条</string>
 </resources>

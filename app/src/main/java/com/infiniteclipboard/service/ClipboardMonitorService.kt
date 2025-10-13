@@ -15,6 +15,7 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -57,13 +58,17 @@ class ClipboardMonitorService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
-        ensureEdgeBar()
+
+        // 仅在开启时显示小条
+        if (prefs.getBoolean("edge_bar_enabled", false)) {
+            ensureEdgeBar()
+        }
 
         // 启动 Shizuku 监听（若开启且可用）
         val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
         if (enableShizuku) ShizukuClipboardMonitor.start(this)
 
-        LogUtils.d("ClipboardService", "服务已启动，监听器已注册 + 边缘小条已显示")
+        LogUtils.d("ClipboardService", "服务已启动，监听器已注册")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -72,6 +77,8 @@ class ClipboardMonitorService : Service() {
             ACTION_CLEAR_ALL -> clearAll()
             ACTION_SHIZUKU_START -> ShizukuClipboardMonitor.start(this)
             ACTION_SHIZUKU_STOP -> ShizukuClipboardMonitor.stop()
+            ACTION_EDGE_BAR_ENABLE -> ensureEdgeBar()
+            ACTION_EDGE_BAR_DISABLE -> removeEdgeBar()
         }
         updateNotification()
         return START_STICKY
@@ -96,7 +103,6 @@ class ClipboardMonitorService : Service() {
                 LogUtils.d("ClipboardService", "内部写入，跳过采集")
                 return
             }
-            // 若已开 Shizuku，则无需瞬时前台；否则可用瞬时前台兜底
             val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
             if (!enableShizuku) {
                 val it = Intent(this, TapRecordActivity::class.java).apply {
@@ -142,6 +148,10 @@ class ClipboardMonitorService : Service() {
 
     private fun ensureEdgeBar() {
         if (barView != null) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            LogUtils.d("ClipboardService", "无悬浮窗权限，跳过显示边缘小条")
+            return
+        }
         val width = dp(48f)
         val lp = WindowManager.LayoutParams(
             width,
@@ -241,13 +251,17 @@ class ClipboardMonitorService : Service() {
         try {
             wm.addView(container, lp)
             barView = container
-        } catch (_: Throwable) { }
+            LogUtils.d("ClipboardService", "边缘小条已显示")
+        } catch (_: Throwable) {
+            LogUtils.e("ClipboardService", "显示边缘小条失败")
+        }
     }
 
     private fun removeEdgeBar() {
         val v = barView ?: return
         try { wm.removeViewImmediate(v) } catch (_: Throwable) { }
         barView = null
+        LogUtils.d("ClipboardService", "边缘小条已移除")
     }
 
     // ========== 通知 ==========
@@ -317,6 +331,8 @@ class ClipboardMonitorService : Service() {
         private const val ACTION_CLEAR_ALL = "com.infiniteclipboard.action.CLEAR_ALL"
         const val ACTION_SHIZUKU_START = "com.infiniteclipboard.action.SHIZUKU_START"
         const val ACTION_SHIZUKU_STOP = "com.infiniteclipboard.action.SHIZUKU_STOP"
+        const val ACTION_EDGE_BAR_ENABLE = "com.infiniteclipboard.action.EDGE_BAR_ENABLE"
+        const val ACTION_EDGE_BAR_DISABLE = "com.infiniteclipboard.action.EDGE_BAR_DISABLE"
 
         fun start(context: Context) {
             val intent = Intent(context, ClipboardMonitorService::class.java)

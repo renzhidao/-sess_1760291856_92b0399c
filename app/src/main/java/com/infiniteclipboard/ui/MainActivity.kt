@@ -26,14 +26,14 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.lifecycle.lifecycleScope
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.data.ClipboardEntity
 import com.infiniteclipboard.databinding.ActivityMainBinding
-import com.infiniteclipboard.service.ClipboardMonitorService
 import com.infiniteclipboard.service.ClipboardAccessibilityService
+import com.infiniteclipboard.service.ClipboardMonitorService
 import com.infiniteclipboard.service.ShizukuClipboardMonitor
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.Dispatchers
@@ -66,6 +66,9 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // 关键：绑定 Toolbar 才会显示右上角菜单
+        setSupportActionBar(binding.toolbar)
+
         LogUtils.init(this)
         LogUtils.d("MainActivity", "应用启动")
 
@@ -84,9 +87,13 @@ class MainActivity : AppCompatActivity() {
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.menu_main, menu)
         // 根据当前状态更新标题
-        val enabled = prefs.getBoolean("shizuku_enabled", false)
+        val shizukuEnabled = prefs.getBoolean("shizuku_enabled", false)
         menu.findItem(R.id.action_shizuku_toggle)?.title =
-            if (enabled) "关闭Shizuku全局监听" else "开启Shizuku全局监听"
+            if (shizukuEnabled) "关闭Shizuku全局监听" else "开启Shizuku全局监听"
+
+        val edgeBarEnabled = prefs.getBoolean("edge_bar_enabled", false)
+        menu.findItem(R.id.action_edge_bar_toggle)?.title =
+            if (edgeBarEnabled) getString(R.string.edge_bar_disable) else getString(R.string.edge_bar_enable)
         return true
     }
 
@@ -95,13 +102,13 @@ class MainActivity : AppCompatActivity() {
         R.id.action_export -> { createDoc.launch("clipboard_backup.json"); true }
         R.id.action_import -> { openDoc.launch(arrayOf("application/json")); true }
         R.id.action_shizuku_toggle -> { toggleShizuku(); true }
+        R.id.action_edge_bar_toggle -> { toggleEdgeBar(); true }
         else -> super.onOptionsItemSelected(item)
     }
 
     private fun toggleShizuku() {
         val enabled = prefs.getBoolean("shizuku_enabled", false)
         if (!enabled) {
-            // 开启
             if (!ShizukuClipboardMonitor.isAvailable()) {
                 Toast.makeText(this, "Shizuku 未连接或不可用", Toast.LENGTH_LONG).show()
                 return
@@ -115,10 +122,45 @@ class MainActivity : AppCompatActivity() {
             ShizukuClipboardMonitor.start(this)
             Toast.makeText(this, "已开启 Shizuku 全局监听", Toast.LENGTH_SHORT).show()
         } else {
-            // 关闭
             prefs.edit().putBoolean("shizuku_enabled", false).apply()
             ShizukuClipboardMonitor.stop()
             Toast.makeText(this, "已关闭 Shizuku 全局监听", Toast.LENGTH_SHORT).show()
+        }
+        invalidateOptionsMenu()
+    }
+
+    private fun toggleEdgeBar() {
+        val enabled = prefs.getBoolean("edge_bar_enabled", false)
+        if (!enabled) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+                try {
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")
+                    )
+                    startActivity(intent)
+                    Toast.makeText(this, "请授予“在其他应用上层显示”权限后再开启", Toast.LENGTH_LONG).show()
+                } catch (_: Throwable) {
+                    Toast.makeText(this, "无法打开悬浮窗权限设置", Toast.LENGTH_LONG).show()
+                }
+                return
+            }
+            // 开启
+            prefs.edit().putBoolean("edge_bar_enabled", true).apply()
+            ClipboardMonitorService.start(this)
+            val it = Intent(this, ClipboardMonitorService::class.java).apply {
+                action = ClipboardMonitorService.ACTION_EDGE_BAR_ENABLE
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(it) else startService(it)
+            Toast.makeText(this, "边缘小条已开启", Toast.LENGTH_SHORT).show()
+        } else {
+            // 关闭
+            prefs.edit().putBoolean("edge_bar_enabled", false).apply()
+            val it = Intent(this, ClipboardMonitorService::class.java).apply {
+                action = ClipboardMonitorService.ACTION_EDGE_BAR_DISABLE
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(it) else startService(it)
+            Toast.makeText(this, "边缘小条已关闭", Toast.LENGTH_SHORT).show()
         }
         invalidateOptionsMenu()
     }
@@ -151,7 +193,6 @@ class MainActivity : AppCompatActivity() {
     private fun setupButtons() {
         binding.btnClearAll.setOnClickListener { showClearAllDialog() }
         binding.btnLog.setOnClickListener { startActivity(Intent(this, LogViewerActivity::class.java)) }
-        // 已删除：中转键盘 UI 与逻辑
     }
 
     private fun observeData() {
