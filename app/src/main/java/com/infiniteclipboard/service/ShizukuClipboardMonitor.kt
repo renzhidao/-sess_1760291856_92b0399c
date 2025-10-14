@@ -1,4 +1,3 @@
-文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
 // Shizuku 监控：绑定 UserService（防并发绑定）、daemon 常驻、成功后轮询后台读取
 package com.infiniteclipboard.service
@@ -102,8 +101,8 @@ object ShizukuClipboardMonitor {
             userServiceArgs = Shizuku.UserServiceArgs(
                 ComponentName(context, ClipboardUserService::class.java)
             )
-                .processNameSuffix("shizuku") // 对应 android:process=":shizuku"
-                .daemon(true)                 // 常驻，减少断开
+                .processNameSuffix("shizuku")
+                .daemon(true)
                 .tag("clipboard")
                 .version(1)
         }
@@ -162,7 +161,7 @@ object ShizukuClipboardMonitor {
             if (::userServiceArgs.isInitialized) {
                 Shizuku.unbindUserService(userServiceArgs, connection, true)
             }
-        } catch (_: Throwable) { }
+        } catch (_: Throwable) {}
         userService = null
     }
 }
