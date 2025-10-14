@@ -1,6 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// 全 Shizuku 多策略后台监听：优先 IClipboard 直连（SystemServiceHelper），失败再用 Shizuku shell(cmd clipboard get)；
-// 不再绑定 UserService，不做无休止重试；启动即读，稳定入库。
+// 全 Shizuku 后台监听：直接通过 SystemServiceHelper 直连 IClipboard 轮询读取（无绑定、无 shell、无无限重试）
 package com.infiniteclipboard.service
 
 import android.content.ClipData
@@ -15,9 +14,6 @@ import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 import rikka.shizuku.Shizuku
 import rikka.shizuku.SystemServiceHelper
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 object ShizukuClipboardMonitor {
@@ -30,9 +26,7 @@ object ShizukuClipboardMonitor {
 
     @Volatile private var pollJob: Job? = null
     @Volatile private var running = false
-
     private val lastTextHash = AtomicLong(0L)
-    private val lastShellTs = AtomicLong(0L)
 
     fun init(context: Context) {
         LogUtils.d(TAG, "init: binderReady=${safePing()} sdk=${Build.VERSION.SDK_INT}")
@@ -41,7 +35,7 @@ object ShizukuClipboardMonitor {
         }
         Shizuku.addBinderDeadListener {
             stop()
-            // 一次兜底：Binder 恢复后再启一次
+            // Binder 恢复后一小步兜底重启
             mainHandler.postDelayed({ if (hasPermission()) start(context) }, 600)
         }
         Shizuku.addRequestPermissionResultListener { _, grantResult ->
@@ -90,7 +84,7 @@ object ShizukuClipboardMonitor {
             val app = ClipboardApplication.instance
             while (isActive) {
                 try {
-                    val text = readClipboardViaShizuku(context)
+                    val text = getClipboardTextViaShizuku(context)
                     LogUtils.clipboard("Shizuku后台", text)
                     if (!text.isNullOrEmpty()) {
                         val h = text.hashCode().toLong()
@@ -112,36 +106,23 @@ object ShizukuClipboardMonitor {
         }
     }
 
-    // 仅使用 Shizuku 权限的两种方式：A 直连 IClipboard；B Shizuku shell
-    private fun readClipboardViaShizuku(ctx: Context): String? {
-        // A) 直连 IClipboard
-        obtainIClipboard_viaShizuku()?.let { proxy ->
-            invokeGetPrimaryClip(ctx, proxy)?.let { clip ->
-                clipDataToText(ctx, clip)?.let { if (it.isNotEmpty()) return it }
-            }
-            // 额外尝试 forUser/AsUser 签名（少数系统）
-            invokeGetPrimaryClipForUser(ctx, proxy)?.let { clip ->
-                clipDataToText(ctx, clip)?.let { if (it.isNotEmpty()) return it }
-            }
-            invokeGetPrimaryClipAsUser(ctx, proxy)?.let { clip ->
-                clipDataToText(ctx, clip)?.let { if (it.isNotEmpty()) return it }
-            }
+    // —— 仅用 Shizuku 直连 SystemService（IClipboard） —— //
+    private fun getClipboardTextViaShizuku(ctx: Context): String? {
+        val proxy = obtainIClipboard() ?: return null
+        // 多签名尝试
+        invokeGetPrimaryClip(ctx, proxy)?.let { clip ->
+            clipDataToText(ctx, clip)?.let { if (it.isNotEmpty()) return it }
         }
-
-        // B) Shizuku shell：cmd clipboard get（限制频率，避免过于频繁）
-        val now = System.currentTimeMillis()
-        if (now - lastShellTs.get() >= 900L) {
-            lastShellTs.set(now)
-            shellReadClipboard_viaShizuku()?.let { out ->
-                val parsed = parseCmdClipboardGet(out)
-                if (!parsed.isNullOrEmpty()) return parsed
-            }
+        invokeGetPrimaryClipForUser(ctx, proxy)?.let { clip ->
+            clipDataToText(ctx, clip)?.let { if (it.isNotEmpty()) return it }
+        }
+        invokeGetPrimaryClipAsUser(ctx, proxy)?.let { clip ->
+            clipDataToText(ctx, clip)?.let { if (it.isNotEmpty()) return it }
         }
         return null
     }
 
-    // —— A: IClipboard 直连（Shizuku SystemServiceHelper） —— //
-    private fun obtainIClipboard_viaShizuku(): Any? {
+    private fun obtainIClipboard(): Any? {
         return try {
             val raw = SystemServiceHelper.getSystemService("clipboard") as? IBinder ?: return null
             val stub = Class.forName("android.content.IClipboard\$Stub")
@@ -150,9 +131,9 @@ object ShizukuClipboardMonitor {
         } catch (_: Throwable) { null }
     }
 
+    // 兼容多形态 getPrimaryClip
     private fun invokeGetPrimaryClip(ctx: Context, proxy: Any): ClipData? {
         val clazz = proxy.javaClass
-
         // (AttributionSource, Int)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
@@ -165,7 +146,6 @@ object ShizukuClipboardMonitor {
             val uid = myUserId() ?: 0
             return try { if (src != null) m.invoke(proxy, src, uid) as? ClipData else null } catch (_: Throwable) { null }
         }
-
         // (AttributionSource)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
@@ -176,7 +156,6 @@ object ShizukuClipboardMonitor {
             val src = buildAttributionSourceOrNull(ctx)
             return try { if (src != null) m.invoke(proxy, src) as? ClipData else null } catch (_: Throwable) { null }
         }
-
         // (String, String, Int)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
@@ -189,7 +168,6 @@ object ShizukuClipboardMonitor {
             val uid = myUserId() ?: 0
             return try { m.invoke(proxy, ctx.packageName, null, uid) as? ClipData } catch (_: Throwable) { null }
         }
-
         // (String, Int)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
@@ -201,7 +179,6 @@ object ShizukuClipboardMonitor {
             val uid = myUserId() ?: 0
             return try { m.invoke(proxy, ctx.packageName, uid) as? ClipData } catch (_: Throwable) { null }
         }
-
         // (String, String)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
@@ -212,7 +189,6 @@ object ShizukuClipboardMonitor {
         }?.let { m ->
             return try { m.invoke(proxy, ctx.packageName, null) as? ClipData } catch (_: Throwable) { null }
         }
-
         // (String)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
@@ -222,7 +198,6 @@ object ShizukuClipboardMonitor {
         }?.let { m ->
             return try { m.invoke(proxy, ctx.packageName) as? ClipData } catch (_: Throwable) { null }
         }
-
         // ()
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
@@ -231,11 +206,10 @@ object ShizukuClipboardMonitor {
         }?.let { m ->
             return try { m.invoke(proxy) as? ClipData } catch (_: Throwable) { null }
         }
-
         return null
     }
 
-    // 少量系统提供 *ForUser / *AsUser 变体
+    // 极少系统的 forUser / asUser 变体
     private fun invokeGetPrimaryClipForUser(ctx: Context, proxy: Any): ClipData? {
         val clazz = proxy.javaClass
         clazz.methods.firstOrNull {
@@ -312,46 +286,5 @@ object ShizukuClipboardMonitor {
             val m = uh.getMethod("myUserId")
             m.invoke(null) as? Int
         } catch (_: Throwable) { null }
-    }
-
-    // —— B: Shizuku shell —— //
-    private fun shellReadClipboard_viaShizuku(): String? {
-        return try {
-            val cmd = arrayOf("/system/bin/sh", "-c", "cmd clipboard get 2>/dev/null || cmd -l clipboard get 2>/dev/null")
-            val proc = Shizuku.newProcess(cmd, null, null)
-            val ok = proc.waitFor(1200, TimeUnit.MILLISECONDS)
-            val out = BufferedReader(InputStreamReader(proc.inputStream)).use { it.readTextSafe(4096) }
-            if (!ok) try { proc.destroy() } catch (_: Throwable) {}
-            out
-        } catch (_: Throwable) { null }
-    }
-
-    private fun BufferedReader.readTextSafe(limit: Int): String {
-        val sb = StringBuilder()
-        var line: String?
-        var total = 0
-        while (readLine().also { line = it } != null) {
-            val s = line ?: ""
-            val add = s.length + 1
-            if (total + add > limit) break
-            sb.append(s).append('\n')
-            total += add
-        }
-        return sb.toString()
-    }
-
-    private fun parseCmdClipboardGet(output: String?): String? {
-        if (output.isNullOrBlank()) return null
-        val out = output.trim()
-        // 典型格式：Text: "content"
-        val quoted = Regex("(?s)\"(.*)\"").find(out)?.groupValues?.getOrNull(1)
-        if (!quoted.isNullOrBlank()) return quoted
-        // 备用：ClipData { text/plain "content" } / 或直接文本
-        val plain = out
-            .replace("ClipData", "", true)
-            .replace("{", " ").replace("}", " ")
-            .replace("text/plain", " ")
-            .trim()
-        return if (plain.equals("null", true) || plain.equals("not set", true)) null else plain
     }
 }
