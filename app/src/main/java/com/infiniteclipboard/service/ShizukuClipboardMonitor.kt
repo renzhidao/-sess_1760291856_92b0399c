@@ -1,6 +1,6 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
 // Shizuku 后台监听（只用 Shizuku）：以 shell 身份直连 IClipboard；剪贴板变更触发突发读取（6x120ms）
-// 深度诊断日志：详细打印所走反射方法、参数、异常、ClipData结构，定位“为什么读不到”
+// 深度诊断日志：详细打印反射命中、参数、异常、ClipData结构，便于定位“为什么读不到”
 package com.infiniteclipboard.service
 
 import android.content.ClipData
@@ -43,6 +43,9 @@ object ShizukuClipboardMonitor {
     // 去重与降噪
     private val lastSavedHash = AtomicLong(Long.MIN_VALUE)
     private val lastLoggedHash = AtomicLong(Long.MIN_VALUE)
+
+    // 仅定义一次，避免“Conflicting declarations”
+    private data class ClipMeta(val text: String?, val label: String?)
 
     fun init(context: Context) {
         LogUtils.d(TAG, "init: binderReady=${safePing()} sdk=${Build.VERSION.SDK_INT}")
@@ -147,8 +150,6 @@ object ShizukuClipboardMonitor {
     }
 
     // ===== 深度诊断读取 =====
-
-    private data class ClipMeta(val text: String?, val label: String?)
 
     private fun readClipboardWithDiagnostics(ctx: Context): ClipMeta {
         val binderOk = safePing()
@@ -302,7 +303,7 @@ object ShizukuClipboardMonitor {
     }
 
     // 统一的反射调用 + 诊断日志（成功打印 itemCount，失败打印异常）
-    // 将 tag 放在 vararg 之前，避免命名参数遗漏编译错误
+    // tag 放在 vararg 之前，所有调用方都传入第一个参数，避免“缺少命名参数”编译错误
     private fun tryInvoke(tag: String, m: Method, target: Any, vararg args: Any?): ClipData? {
         return try {
             val res = m.invoke(target, *args) as? ClipData
@@ -380,6 +381,4 @@ object ShizukuClipboardMonitor {
             m.invoke(null) as? Int
         } catch (_: Throwable) { null }
     }
-
-    private data class ClipMeta(val text: String?, val label: String?)
 }
