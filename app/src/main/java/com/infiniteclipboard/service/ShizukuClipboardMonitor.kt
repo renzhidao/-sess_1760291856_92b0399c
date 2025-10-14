@@ -209,7 +209,7 @@ object ShizukuClipboardMonitor {
             val src = buildShellAttributionSource()
             for (uid in userIds) {
                 val tag = "getPrimaryClip(AttributionSource,$uid)"
-                val cd = tryInvoke(m, proxy, src, uid, tag)
+                val cd = tryInvoke(tag, m, proxy, src, uid)
                 if (cd != null) return cd to tag
             }
         }
@@ -223,7 +223,7 @@ object ShizukuClipboardMonitor {
         }?.let { m ->
             val src = buildShellAttributionSource()
             val tag = "getPrimaryClip(AttributionSource)"
-            val cd = tryInvoke(m, proxy, src, tag = tag)
+            val cd = tryInvoke(tag, m, proxy, src)
             if (cd != null) return cd to tag
         }
 
@@ -238,7 +238,7 @@ object ShizukuClipboardMonitor {
         }?.let { m ->
             for (pkg in pkgs) for (uid in userIds) {
                 val tag = "getPrimaryClip($pkg,null,$uid)"
-                val cd = tryInvoke(m, proxy, pkg, null, uid, tag = tag)
+                val cd = tryInvoke(tag, m, proxy, pkg, null, uid)
                 if (cd != null) return cd to tag
             }
         }
@@ -253,7 +253,7 @@ object ShizukuClipboardMonitor {
         }?.let { m ->
             for (pkg in pkgs) for (uid in userIds) {
                 val tag = "getPrimaryClip($pkg,$uid)"
-                val cd = tryInvoke(m, proxy, pkg, uid, tag = tag)
+                val cd = tryInvoke(tag, m, proxy, pkg, uid)
                 if (cd != null) return cd to tag
             }
         }
@@ -268,7 +268,7 @@ object ShizukuClipboardMonitor {
         }?.let { m ->
             for (pkg in pkgs) {
                 val tag = "getPrimaryClip($pkg,null)"
-                val cd = tryInvoke(m, proxy, pkg, null, tag = tag)
+                val cd = tryInvoke(tag, m, proxy, pkg, null)
                 if (cd != null) return cd to tag
             }
         }
@@ -282,7 +282,7 @@ object ShizukuClipboardMonitor {
         }?.let { m ->
             for (pkg in pkgs) {
                 val tag = "getPrimaryClip($pkg)"
-                val cd = tryInvoke(m, proxy, pkg, tag = tag)
+                val cd = tryInvoke(tag, m, proxy, pkg)
                 if (cd != null) return cd to tag
             }
         }
@@ -294,7 +294,7 @@ object ShizukuClipboardMonitor {
                 it.parameterCount == 0
         }?.let { m ->
             val tag = "getPrimaryClip()"
-            val cd = tryInvoke(m, proxy, tag = tag)
+            val cd = tryInvoke(tag, m, proxy)
             if (cd != null) return cd to tag
         }
 
@@ -302,7 +302,8 @@ object ShizukuClipboardMonitor {
     }
 
     // 统一的反射调用 + 诊断日志（成功打印 itemCount，失败打印异常）
-    private fun tryInvoke(m: Method, target: Any, vararg args: Any?, tag: String): ClipData? {
+    // 将 tag 放在 vararg 之前，避免命名参数遗漏编译错误
+    private fun tryInvoke(tag: String, m: Method, target: Any, vararg args: Any?): ClipData? {
         return try {
             val res = m.invoke(target, *args) as? ClipData
             if (res == null) {
@@ -328,7 +329,8 @@ object ShizukuClipboardMonitor {
         } catch (t: Throwable) {
             LogUtils.e(TAG, "DBG obtainIClipboard EX", t)
             null
-    }   }
+        }
+    }
 
     private fun clipDataToText(ctx: Context, clip: ClipData?): String? {
         if (clip == null || clip.itemCount <= 0) return null
@@ -378,4 +380,6 @@ object ShizukuClipboardMonitor {
             m.invoke(null) as? Int
         } catch (_: Throwable) { null }
     }
+
+    private data class ClipMeta(val text: String?, val label: String?)
 }
