@@ -50,4 +50,7 @@ class ClipboardApplication : Application() {
     }
 
     companion object {
-        lateinit 
+        lateinit var instance: ClipboardApplication
+            private set
+    }
+}

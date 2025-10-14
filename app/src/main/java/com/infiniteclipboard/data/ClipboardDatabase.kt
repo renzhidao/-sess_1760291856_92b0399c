@@ -1,4 +1,4 @@
-// ClipboardDatabase - Room 数据库
+// 文件: app/src/main/java/com/infiniteclipboard/data/ClipboardDatabase.kt
 package com.infiniteclipboard.data
 
 import android.content.Context

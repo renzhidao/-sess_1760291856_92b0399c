@@ -1,4 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardMonitorService.kt
+// 前台监控服务：不拉起前台Activity；Shizuku连上则后台读取；否则静默（边缘小条可手动操作）
 package com.infiniteclipboard.service
 
 import android.app.Notification
@@ -107,7 +108,7 @@ class ClipboardMonitorService : Service() {
                 LogUtils.d("ClipboardService", "Shizuku已运行，由后台读取")
                 return
             }
-            // 关键变更：不再拉起任何 Activity（不跳转、不打断用户）
+            // 不拉起任何 Activity（静默）
             LogUtils.d("ClipboardService", "Shizuku未运行；按要求不前台拉起读取，保持静默")
         } catch (e: Exception) {
             LogUtils.e("ClipboardService", "处理剪切板变化失败", e)

@@ -1,4 +1,4 @@
-// header
+// 文件: app/src/main/java/com/infiniteclipboard/data/ClipboardEntity.kt
 package com.infiniteclipboard.data
 
 import androidx.room.Entity

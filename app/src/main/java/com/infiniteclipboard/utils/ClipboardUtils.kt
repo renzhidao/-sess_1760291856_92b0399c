@@ -1,5 +1,4 @@
 // 文件: app/src/main/java/com/infiniteclipboard/utils/ClipboardUtils.kt
-// ClipboardUtils - 工具类（增强：coerceToText + 重试 + 多Item合并）
 package com.infiniteclipboard.utils
 
 import android.content.ClipData
@@ -62,7 +61,7 @@ object ClipboardUtils {
         return if (all.isEmpty()) null else all
     }
 
-    // 重要：使用我们自己的标签，方便在监听里识别“自家写入”的变更以跳过前台拉起
+    // 使用我们自己的标签，方便在监听里识别“自家写入”的变更以跳过
     fun setClipboardText(context: Context, text: String) {
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = ClipData.newPlainText(INTERNAL_LABEL, text)

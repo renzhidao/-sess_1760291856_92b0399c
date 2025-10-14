@@ -105,7 +105,6 @@ class MainActivity : AppCompatActivity() {
     private fun toggleShizuku() {
         val enabled = prefs.getBoolean("shizuku_enabled", false)
         if (!enabled) {
-            // 确保在 Binder 就绪后发起权限请求（主线程）
             ShizukuClipboardMonitor.ensurePermission(this) { granted ->
                 if (granted) {
                     prefs.edit().putBoolean("shizuku_enabled", true).apply()
