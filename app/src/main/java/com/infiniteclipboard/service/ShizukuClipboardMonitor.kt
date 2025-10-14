@@ -1,5 +1,6 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// Shizuku 后台监听（稳定版）：以 shell 身份直连 IClipboard；剪贴板变更触发突发读取（6x120ms）；去重与自写入过滤
+// Shizuku 后台监听（只用 Shizuku）：以 shell 身份直连 IClipboard；剪贴板变更触发突发读取（6x120ms）
+// 深度诊断日志：详细打印所走反射方法、参数、异常、ClipData结构，定位“为什么读不到”
 package com.infiniteclipboard.service
 
 import android.content.ClipData
@@ -14,6 +15,7 @@ import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 import rikka.shizuku.Shizuku
 import rikka.shizuku.SystemServiceHelper
+import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicLong
 
 object ShizukuClipboardMonitor {
@@ -88,7 +90,7 @@ object ShizukuClipboardMonitor {
         LogUtils.d(TAG, "STOP")
     }
 
-    // 由前台服务在 OnPrimaryClipChanged 回调触发
+    // 由服务 OnPrimaryClipChanged 回调触发
     fun onPrimaryClipChanged(context: Context) {
         if (!hasPermission() || !isAvailable()) return
         if (!running) start(context)
@@ -96,7 +98,7 @@ object ShizukuClipboardMonitor {
             var i = 0
             while (isActive && i < BURST_TRIES) {
                 try {
-                    val meta = readClipboardViaShizukuWithMeta(context)
+                    val meta = readClipboardWithDiagnostics(context)
                     handleMeta(meta) // suspend 安全调用
                     if (!meta.text.isNullOrEmpty()) break
                 } catch (_: Throwable) { }
@@ -112,7 +114,7 @@ object ShizukuClipboardMonitor {
         pollJob = scope.launch {
             while (isActive) {
                 try {
-                    val meta = readClipboardViaShizukuWithMeta(context)
+                    val meta = readClipboardWithDiagnostics(context)
                     handleMeta(meta) // suspend 安全调用
                 } catch (e: Throwable) {
                     LogUtils.e(TAG, "POLL_ERROR", e)
@@ -122,20 +124,7 @@ object ShizukuClipboardMonitor {
         }
     }
 
-    private data class ClipMeta(val text: String?, val label: String?)
-
-    // —— 核心读取：Shizuku SystemServiceHelper 直连 IClipboard，强制以 shell 身份声明 —— //
-    private fun readClipboardViaShizukuWithMeta(ctx: Context): ClipMeta {
-        val proxy = obtainIClipboard() ?: return ClipMeta(null, null)
-        var clip: ClipData? = invokeGetPrimaryClip(ctx, proxy)
-        if (clip == null) clip = invokeGetPrimaryClipForUser(ctx, proxy)
-        if (clip == null) clip = invokeGetPrimaryClipAsUser(ctx, proxy)
-        val label = try { clip?.description?.label?.toString() } catch (_: Throwable) { null }
-        val text = if (clip != null) clipDataToText(ctx, clip) else null
-        return ClipMeta(text, label)
-    }
-
-    // 标记为 suspend：内部调用 suspend 的 repository.insertItem
+    // 标记为 suspend：内含 repository.insertItem（suspend）
     private suspend fun handleMeta(meta: ClipMeta) {
         val text = meta.text ?: return
         if (text.isEmpty()) return
@@ -157,20 +146,59 @@ object ShizukuClipboardMonitor {
         }
     }
 
-    private fun obtainIClipboard(): Any? {
-        return try {
-            val raw = SystemServiceHelper.getSystemService("clipboard") as? IBinder ?: return null
-            val stub = Class.forName("android.content.IClipboard\$Stub")
-            val asInterface = stub.getMethod("asInterface", IBinder::class.java)
-            asInterface.invoke(null, raw)
-        } catch (_: Throwable) { null }
+    // ===== 深度诊断读取 =====
+
+    private data class ClipMeta(val text: String?, val label: String?)
+
+    private fun readClipboardWithDiagnostics(ctx: Context): ClipMeta {
+        val binderOk = safePing()
+        LogUtils.d(TAG, "DBG binderPing=$binderOk")
+        val proxy = obtainIClipboard() ?: run {
+            LogUtils.d(TAG, "DBG obtainIClipboard=null")
+            return ClipMeta(null, null)
+        }
+        LogUtils.d(TAG, "DBG proxyClass=${proxy.javaClass.name}")
+
+        // 列出可用 getPrimaryClip 方法签名
+        try {
+            val sigs = proxy.javaClass.methods.filter { it.name.equals("getPrimaryClip", true) }
+                .joinToString("; ") { it.toGenericString() }
+            LogUtils.d(TAG, "DBG methods=$sigs")
+        } catch (_: Throwable) { }
+
+        val (clip, hit) = getPrimaryClipAllShapes(ctx, proxy)
+        LogUtils.d(TAG, "DBG hit=$hit clip=${if (clip==null) "null" else "ok"}")
+        if (clip == null) return ClipMeta(null, null)
+
+        val desc = try { clip.description } catch (_: Throwable) { null }
+        val label = try { desc?.label?.toString() } catch (_: Throwable) { null }
+        val mimeCount = try { desc?.mimeTypeCount } catch (_: Throwable) { null }
+        val itemCount = clip.itemCount
+        LogUtils.d(TAG, "DBG clipDescLabel=$label mimeCount=$mimeCount itemCount=$itemCount")
+
+        // 打印每个 item 的类型与预览
+        try {
+            for (i in 0 until itemCount) {
+                val it = clip.getItemAt(i)
+                val hasText = it.text != null
+                val hasUri = it.uri != null
+                val hasIntent = it.intent != null
+                val coerced = try { it.coerceToText(ctx)?.toString() } catch (_: Throwable) { null }
+                val preview = (coerced ?: it.text?.toString() ?: "").take(120).replace("\n", "\\n")
+                LogUtils.d(TAG, "DBG item[$i] hasText=$hasText hasUri=$hasUri hasIntent=$hasIntent preview=$preview")
+            }
+        } catch (_: Throwable) { }
+
+        val text = clipDataToText(ctx, clip)
+        return ClipMeta(text, label)
     }
 
-    // —— 兼容多形态 getPrimaryClip（全部按 shell 身份声明） —— //
-    private fun invokeGetPrimaryClip(ctx: Context, proxy: Any): ClipData? {
+    private fun getPrimaryClipAllShapes(ctx: Context, proxy: Any): Pair<ClipData?, String> {
         val clazz = proxy.javaClass
+        val userIds = listOfNotNull(myUserId(), 0).distinct()
+        val pkgs = listOf(SHELL_PKG, ctx.packageName)
 
-        // (AttributionSource, Int userId)
+        // 1) (AttributionSource, Int)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
@@ -179,11 +207,14 @@ object ShizukuClipboardMonitor {
                 (it.parameterTypes[1] == Int::class.javaPrimitiveType || it.parameterTypes[1] == Integer::class.java)
         }?.let { m ->
             val src = buildShellAttributionSource()
-            val userId = myUserId() ?: 0
-            return try { if (src != null) m.invoke(proxy, src, userId) as? ClipData else null } catch (_: Throwable) { null }
+            for (uid in userIds) {
+                val tag = "getPrimaryClip(AttributionSource,$uid)"
+                val cd = tryInvoke(m, proxy, src, uid, tag)
+                if (cd != null) return cd to tag
+            }
         }
 
-        // (AttributionSource)
+        // 2) (AttributionSource)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
@@ -191,10 +222,12 @@ object ShizukuClipboardMonitor {
                 it.parameterTypes[0].name == "android.content.AttributionSource"
         }?.let { m ->
             val src = buildShellAttributionSource()
-            return try { if (src != null) m.invoke(proxy, src) as? ClipData else null } catch (_: Throwable) { null }
+            val tag = "getPrimaryClip(AttributionSource)"
+            val cd = tryInvoke(m, proxy, src, tag = tag)
+            if (cd != null) return cd to tag
         }
 
-        // (String pkg, String feature, Int userId)
+        // 3) (String,String,Int)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
@@ -203,11 +236,14 @@ object ShizukuClipboardMonitor {
                 it.parameterTypes[1] == String::class.java &&
                 (it.parameterTypes[2] == Int::class.javaPrimitiveType || it.parameterTypes[2] == Integer::class.java)
         }?.let { m ->
-            val userId = myUserId() ?: 0
-            return try { m.invoke(proxy, SHELL_PKG, null, userId) as? ClipData } catch (_: Throwable) { null }
+            for (pkg in pkgs) for (uid in userIds) {
+                val tag = "getPrimaryClip($pkg,null,$uid)"
+                val cd = tryInvoke(m, proxy, pkg, null, uid, tag = tag)
+                if (cd != null) return cd to tag
+            }
         }
 
-        // (String pkg, Int userId)
+        // 4) (String,Int)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
@@ -215,11 +251,14 @@ object ShizukuClipboardMonitor {
                 it.parameterTypes[0] == String::class.java &&
                 (it.parameterTypes[1] == Int::class.javaPrimitiveType || it.parameterTypes[1] == Integer::class.java)
         }?.let { m ->
-            val userId = myUserId() ?: 0
-            return try { m.invoke(proxy, SHELL_PKG, userId) as? ClipData } catch (_: Throwable) { null }
+            for (pkg in pkgs) for (uid in userIds) {
+                val tag = "getPrimaryClip($pkg,$uid)"
+                val cd = tryInvoke(m, proxy, pkg, uid, tag = tag)
+                if (cd != null) return cd to tag
+            }
         }
 
-        // (String pkg, String feature)
+        // 5) (String,String)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
@@ -227,83 +266,88 @@ object ShizukuClipboardMonitor {
                 it.parameterTypes[0] == String::class.java &&
                 it.parameterTypes[1] == String::class.java
         }?.let { m ->
-            return try { m.invoke(proxy, SHELL_PKG, null) as? ClipData } catch (_: Throwable) { null }
+            for (pkg in pkgs) {
+                val tag = "getPrimaryClip($pkg,null)"
+                val cd = tryInvoke(m, proxy, pkg, null, tag = tag)
+                if (cd != null) return cd to tag
+            }
         }
 
-        // (String pkg)
+        // 6) (String)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
                 it.parameterCount == 1 &&
                 it.parameterTypes[0] == String::class.java
         }?.let { m ->
-            return try { m.invoke(proxy, SHELL_PKG) as? ClipData } catch (_: Throwable) { null }
+            for (pkg in pkgs) {
+                val tag = "getPrimaryClip($pkg)"
+                val cd = tryInvoke(m, proxy, pkg, tag = tag)
+                if (cd != null) return cd to tag
+            }
         }
 
-        // ()
+        // 7) ()
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
                 it.parameterCount == 0
         }?.let { m ->
-            return try { m.invoke(proxy) as? ClipData } catch (_: Throwable) { null }
+            val tag = "getPrimaryClip()"
+            val cd = tryInvoke(m, proxy, tag = tag)
+            if (cd != null) return cd to tag
         }
 
-        return null
+        return null to "none"
     }
 
-    private fun invokeGetPrimaryClipForUser(ctx: Context, proxy: Any): ClipData? {
-        val clazz = proxy.javaClass
-        clazz.methods.firstOrNull {
-            it.name.equals("getPrimaryClipForUser", true) &&
-                it.returnType == ClipData::class.java &&
-                it.parameterTypes.size == 2 &&
-                it.parameterTypes[0] == String::class.java &&
-                (it.parameterTypes[1] == Int::class.javaPrimitiveType || it.parameterTypes[1] == Integer::class.java)
-        }?.let { m ->
-            val userId = myUserId() ?: 0
-            return try { m.invoke(proxy, SHELL_PKG, userId) as? ClipData } catch (_: Throwable) { null }
+    // 统一的反射调用 + 诊断日志（成功打印 itemCount，失败打印异常）
+    private fun tryInvoke(m: Method, target: Any, vararg args: Any?, tag: String): ClipData? {
+        return try {
+            val res = m.invoke(target, *args) as? ClipData
+            if (res == null) {
+                LogUtils.d(TAG, "DBG TRY $tag -> null")
+            } else {
+                val ic = try { res.itemCount } catch (_: Throwable) { -1 }
+                val label = try { res.description?.label } catch (_: Throwable) { null }
+                LogUtils.d(TAG, "DBG TRY $tag -> OK itemCount=$ic label=$label")
+            }
+            res
+        } catch (t: Throwable) {
+            LogUtils.e(TAG, "DBG TRY $tag -> EX", t)
+            null
         }
-        clazz.methods.firstOrNull {
-            it.name.equals("getPrimaryClipForUser", true) &&
-                it.returnType == ClipData::class.java &&
-                it.parameterTypes.size == 1 &&
-                (it.parameterTypes[0] == Int::class.javaPrimitiveType || it.parameterTypes[0] == Integer::class.java)
-        }?.let { m ->
-            val userId = myUserId() ?: 0
-            return try { m.invoke(proxy, userId) as? ClipData } catch (_: Throwable) { null }
-        }
-        return null
     }
 
-    private fun invokeGetPrimaryClipAsUser(ctx: Context, proxy: Any): ClipData? {
-        val clazz = proxy.javaClass
-        clazz.methods.firstOrNull {
-            it.name.equals("getPrimaryClipAsUser", true) &&
-                it.returnType == ClipData::class.java &&
-                it.parameterTypes.size == 2 &&
-                it.parameterTypes[0] == String::class.java &&
-                (it.parameterTypes[1] == Int::class.javaPrimitiveType || it.parameterTypes[1] == Integer::class.java)
-        }?.let { m ->
-            val userId = myUserId() ?: 0
-            return try { m.invoke(proxy, SHELL_PKG, userId) as? ClipData } catch (_: Throwable) { null }
-        }
-        return null
-    }
+    private fun obtainIClipboard(): Any? {
+        return try {
+            val raw = SystemServiceHelper.getSystemService("clipboard") as? IBinder ?: return null
+            val stub = Class.forName("android.content.IClipboard\$Stub")
+            val asInterface = stub.getMethod("asInterface", IBinder::class.java)
+            asInterface.invoke(null, raw)
+        } catch (t: Throwable) {
+            LogUtils.e(TAG, "DBG obtainIClipboard EX", t)
+            null
+    }   }
 
     private fun clipDataToText(ctx: Context, clip: ClipData?): String? {
         if (clip == null || clip.itemCount <= 0) return null
         val sb = StringBuilder()
         for (i in 0 until clip.itemCount) {
             val item = clip.getItemAt(i)
-            val piece = try { item.coerceToText(ctx)?.toString() } catch (_: Throwable) { item.text?.toString() }
-            val clean = piece?.trim()
-            if (!clean.isNullOrEmpty()) {
+            val coerced = try { item.coerceToText(ctx)?.toString() } catch (_: Throwable) { null }
+            val piece = when {
+                !coerced.isNullOrBlank() -> coerced
+                item.text != null -> item.text.toString()
+                else -> null
+            }
+            if (!piece.isNullOrBlank()) {
                 if (sb.isNotEmpty()) sb.append('\n')
-                sb.append(clean)
+                sb.append(piece)
             }
         }
-        return sb.toString().trim().ifEmpty { null }
+        val all = sb.toString().trim()
+        return if (all.isEmpty()) null else all
     }
 
     private fun buildShellAttributionSource(): Any? {
@@ -321,7 +365,10 @@ object ShizukuClipboardMonitor {
                 val build = bCls.getMethod("build")
                 build.invoke(b)
             }
-        } catch (_: Throwable) { null }
+        } catch (t: Throwable) {
+            LogUtils.e(TAG, "DBG buildShellAttributionSource EX", t)
+            null
+        }
     }
 
     private fun myUserId(): Int? {
