@@ -27,17 +27,23 @@ class ClipboardUserService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
-    private fun obtainIClipboard(): Any? = try {
-        val smCls = Class.forName("android.os.ServiceManager")
-        val getService = smCls.getMethod("getService", String::class.java)
-        val raw = getService.invoke(null, "clipboard") as? IBinder ?: return null
-        val stub = Class.forName("android.content.IClipboard\$Stub")
-        val asInterface = stub.getMethod("asInterface", IBinder::class.java)
-        asInterface.invoke(null, raw)
-    } catch (_: Throwable) { null }
+    // 修复：改为块体函数，允许在函数体内使用 return
+    private fun obtainIClipboard(): Any? {
+        return try {
+            val smCls = Class.forName("android.os.ServiceManager")
+            val getService = smCls.getMethod("getService", String::class.java)
+            val raw = getService.invoke(null, "clipboard") as? IBinder ?: return null
+            val stub = Class.forName("android.content.IClipboard\$Stub")
+            val asInterface = stub.getMethod("asInterface", IBinder::class.java)
+            asInterface.invoke(null, raw)
+        } catch (_: Throwable) {
+            null
+        }
+    }
 
     private fun invokeGetPrimaryClip(proxy: Any): ClipData? {
         val clazz = proxy.javaClass
+        // (AttributionSource, Int)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                     it.returnType == ClipData::class.java &&
@@ -49,6 +55,7 @@ class ClipboardUserService : Service() {
             val uid = myUserId() ?: 0
             return try { if (src != null) m.invoke(proxy, src, uid) as? ClipData else null } catch (_: Throwable) { null }
         }
+        // (AttributionSource)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                     it.returnType == ClipData::class.java &&
@@ -58,6 +65,7 @@ class ClipboardUserService : Service() {
             val src = buildAttributionSourceOrNull()
             return try { if (src != null) m.invoke(proxy, src) as? ClipData else null } catch (_: Throwable) { null }
         }
+        // (String, String, Int)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                     it.returnType == ClipData::class.java &&
@@ -69,6 +77,7 @@ class ClipboardUserService : Service() {
             val uid = myUserId() ?: 0
             return try { m.invoke(proxy, packageName, null, uid) as? ClipData } catch (_: Throwable) { null }
         }
+        // (String, Int)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                     it.returnType == ClipData::class.java &&
@@ -79,6 +88,7 @@ class ClipboardUserService : Service() {
             val uid = myUserId() ?: 0
             return try { m.invoke(proxy, packageName, uid) as? ClipData } catch (_: Throwable) { null }
         }
+        // (String, String)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                     it.returnType == ClipData::class.java &&
@@ -88,6 +98,7 @@ class ClipboardUserService : Service() {
         }?.let { m ->
             return try { m.invoke(proxy, packageName, null) as? ClipData } catch (_: Throwable) { null }
         }
+        // (String)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                     it.returnType == ClipData::class.java &&
@@ -96,6 +107,7 @@ class ClipboardUserService : Service() {
         }?.let { m ->
             return try { m.invoke(proxy, packageName) as? ClipData } catch (_: Throwable) { null }
         }
+        // ()
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                     it.returnType == ClipData::class.java &&
