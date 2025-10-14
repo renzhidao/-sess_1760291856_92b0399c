@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// Shizuku 监控：绑定 UserService（防并发绑定）、daemon 常驻、成功后轮询后台读取 + 绑定超时退避重试
+// 绑定稳态化：先 start 再 bind；超时/死链/异常重连也先 start；退避重试；更详日志
 package com.infiniteclipboard.service
 
 import android.content.ComponentName
@@ -33,7 +33,6 @@ object ShizukuClipboardMonitor {
 
     private lateinit var userServiceArgs: Shizuku.UserServiceArgs
 
-    // 新增：绑定超时与退避
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var bindTimeoutRunnable: Runnable? = null
     private val retryAttempt = AtomicInteger(0)
@@ -52,7 +51,6 @@ object ShizukuClipboardMonitor {
             running = false
             userService = null
             LogUtils.d(TAG, "DISCONNECTED: UserService 已断开")
-            // 触发带退避的重连
             scheduleReconnect(reason = "SERVICE_DISCONNECTED")
         }
     }
@@ -117,13 +115,21 @@ object ShizukuClipboardMonitor {
                 .version(1)
         }
         try {
+            // 关键：先显式启动，再绑定（部分环境仅 bind 不触发拉起）
+            try {
+                Shizuku.startUserService(userServiceArgs)
+                LogUtils.d(TAG, "START_SERVICE: 调用 startUserService 成功")
+            } catch (e: Throwable) {
+                LogUtils.e(TAG, "START_SERVICE_FAIL", e)
+            }
+
             binding = true
             LogUtils.d(TAG, "BIND_START: 触发绑定")
             Shizuku.bindUserService(userServiceArgs, connection)
             scheduleBindTimeout(context)
         } catch (e: Throwable) {
             binding = false
-            LogUtils.e(TAG, "BIND_FAIL: 绑定异常", e)
+            LogUtils.e(TAG, "BIND_EXCEPTION: 绑定异常", e)
             scheduleReconnect(context, "BIND_EXCEPTION")
         }
     }
@@ -136,12 +142,20 @@ object ShizukuClipboardMonitor {
                 running = false
                 val delay = computeBackoffDelay()
                 LogUtils.d(TAG, "BIND_TIMEOUT: ${timeoutMs}ms 未连接，${delay}ms 后重试")
-                // 防御性：尝试解绑残留（忽略异常）
+
+                // 再尝试显式启动一次
+                try {
+                    Shizuku.startUserService(userServiceArgs)
+                    LogUtils.d(TAG, "START_SERVICE@TIMEOUT: 已再次调用")
+                } catch (_: Throwable) {}
+
+                // 防御性解绑（忽略异常）
                 try {
                     if (::userServiceArgs.isInitialized) {
                         Shizuku.unbindUserService(userServiceArgs, connection, true)
                     }
                 } catch (_: Throwable) {}
+
                 scope.launch { delay(delay); start(context) }
             }
         }
@@ -218,6 +232,5 @@ object ShizukuClipboardMonitor {
             }
         } catch (_: Throwable) {}
         userService = null
-        // 不重置 retryAttempt，这样后续重连仍然遵循退避；外部会按需重置
     }
 }
