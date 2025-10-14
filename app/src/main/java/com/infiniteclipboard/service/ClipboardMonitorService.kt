@@ -1,5 +1,4 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardMonitorService.kt
-// 前台监控服务 + 屏幕边缘小条（剪切/复制/粘贴）+ 悬浮列表窗口（可滑动、可管理、非跳转）
 package com.infiniteclipboard.service
 
 import android.app.Notification
@@ -29,7 +28,7 @@ import com.infiniteclipboard.ui.TapRecordActivity
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.collectLatest // 修复: 添加 collectLatest 引用
+import kotlinx.coroutines.flow.collectLatest
 
 class ClipboardMonitorService : Service() {
 
@@ -118,7 +117,6 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 测试要求的方法保留
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -159,13 +157,12 @@ class ClipboardMonitorService : Service() {
         val screenH = resources.displayMetrics.heightPixels
         val widthRatio = prefs.getFloat("overlay_width_ratio", 0.65f).coerceIn(0.5f, 0.85f)
         val desiredW = (screenW * widthRatio).toInt()
-        val maxHeight = (screenH * 0.55f).toInt() // 最大高度占屏 55%
+        val maxHeight = (screenH * 0.55f).toInt()
 
         val lp = WindowManager.LayoutParams(
             desiredW,
             WindowManager.LayoutParams.WRAP_CONTENT,
             wmType,
-            // 修复：不抢输入焦点，避免影响键盘
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
@@ -183,7 +180,6 @@ class ClipboardMonitorService : Service() {
         val themedContext = android.view.ContextThemeWrapper(this, R.style.Theme_InfiniteClipboard)
         val v = LayoutInflater.from(themedContext).inflate(R.layout.activity_clipboard_window, null, false)
 
-        // 使列表区域更紧凑，限制总高度
         val rv = v.findViewById<RecyclerView>(R.id.recyclerView).apply {
             setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
             clipToPadding = false
@@ -199,11 +195,9 @@ class ClipboardMonitorService : Service() {
                 serviceScope.launch(Dispatchers.IO) { repository.deleteItem(item) }
             },
             onItemClick = { item ->
-                // 点击条目仅复制，不跳转
                 ClipboardUtils.setClipboardText(this, item.content)
             },
             onShareClick = { item ->
-                // 允许分享（不跳主界面）
                 try {
                     val sendIntent = Intent(Intent.ACTION_SEND).apply {
                         this.type = "text/plain"
@@ -217,10 +211,8 @@ class ClipboardMonitorService : Service() {
         rv.layoutManager = LinearLayoutManager(themedContext)
         rv.adapter = adapter
 
-        // 关闭仅收起悬浮窗
         close.setOnClickListener { hideClipboardOverlay() }
 
-        // 拖动悬浮窗并记忆位置
         v.setOnTouchListener(object : View.OnTouchListener {
             var downX = 0f
             var downY = 0f
@@ -239,7 +231,6 @@ class ClipboardMonitorService : Service() {
                         val dx = (event.rawX - downX).toInt()
                         val dy = (event.rawY - downY).toInt()
                         lp.x = (startX + dx).coerceIn(0, screenW - desiredW)
-                        // 预估高度，避免拖出屏幕
                         val viewH = view.height.coerceAtLeast(maxHeight / 2)
                         lp.y = (startY + dy).coerceIn(0, screenH - viewH)
                         try { wm.updateViewLayout(view, lp) } catch (_: Throwable) {}
@@ -284,7 +275,7 @@ class ClipboardMonitorService : Service() {
         LogUtils.d("ClipboardService", "悬浮小窗已关闭")
     }
 
-    // ========== 边缘小条：仅拦截自身区域触摸，不影响其他区域 ==========
+    // ========== 边缘小条：完全透明背景 + 深蓝文字 + 四周吸附 ==========
     private fun dp(v: Float): Int = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics
     ).toInt()
@@ -314,17 +305,17 @@ class ClipboardMonitorService : Service() {
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0x33000000)
+            setBackgroundColor(Color.TRANSPARENT) // 完全透明
             val pad = dp(4f)
             setPadding(pad, pad, pad, pad)
 
             fun makeBtn(label: String): TextView {
                 return TextView(context).apply {
                     text = label
-                    setTextColor(Color.WHITE)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                    setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
-                    setBackgroundColor(0x55000000)
+                    setTextColor(Color.parseColor("#001F3F")) // 深蓝色（接近黑的蓝）
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                    setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
+                    setBackgroundColor(Color.TRANSPARENT) // 按钮背景也透明
                     isClickable = true
                     isFocusable = false
                     val params = LinearLayout.LayoutParams(
@@ -341,22 +332,66 @@ class ClipboardMonitorService : Service() {
 
             addView(btnCut); addView(btnCopy); addView(btnPaste)
 
+            // 拖动 + 四周吸附
             setOnTouchListener(object : View.OnTouchListener {
-                var lastY = 0f
-                var downY = 0
+                var downX = 0f
+                var downY = 0f
+                var startX = 0
+                var startY = 0
+                val screenW = resources.displayMetrics.widthPixels
+                val screenH = resources.displayMetrics.heightPixels
+
                 override fun onTouch(v: View, e: MotionEvent): Boolean {
                     return when (e.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
-                            lastY = e.rawY
-                            downY = lp.y
+                            downX = e.rawX
+                            downY = e.rawY
+                            startX = lp.x
+                            startY = lp.y
                             false
                         }
                         MotionEvent.ACTION_MOVE -> {
-                            val dy = (e.rawY - lastY).toInt()
-                            lp.y = downY + dy
-                            val h = resources.displayMetrics.heightPixels
+                            val dx = (e.rawX - downX).toInt()
+                            val dy = (e.rawY - downY).toInt()
+                            lp.x = startX + dx
+                            lp.y = startY + dy
+                            try { wm.updateViewLayout(v, lp) } catch (_: Throwable) { }
+                            true
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            // 四周吸附
                             val viewH = v.height
-                            lp.y = lp.y.coerceIn(-h / 2 + viewH / 2, h / 2 - viewH / 2)
+                            val viewW = v.width
+                            val centerX = lp.x + viewW / 2
+                            val centerY = lp.y + viewH / 2
+
+                            // 判断靠哪边最近
+                            val distLeft = centerX
+                            val distRight = screenW - centerX
+                            val distTop = centerY
+                            val distBottom = screenH - centerY
+
+                            val minDist = minOf(distLeft, distRight, distTop, distBottom)
+
+                            when (minDist) {
+                                distLeft -> {
+                                    lp.gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                                    lp.x = 0
+                                }
+                                distRight -> {
+                                    lp.gravity = Gravity.CENTER_VERTICAL or Gravity.END
+                                    lp.x = 0
+                                }
+                                distTop -> {
+                                    lp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                                    lp.y = 0
+                                }
+                                distBottom -> {
+                                    lp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                                    lp.y = 0
+                                }
+                            }
+
                             try { wm.updateViewLayout(v, lp) } catch (_: Throwable) { }
                             true
                         }
@@ -418,7 +453,6 @@ class ClipboardMonitorService : Service() {
     }
 
     private fun createNotification(): Notification {
-        // 点击通知直接展示/收起悬浮小窗（不打开 Activity）
         val openIntent = Intent(this, ClipboardMonitorService::class.java).apply {
             action = ACTION_SHOW_WINDOW
         }
