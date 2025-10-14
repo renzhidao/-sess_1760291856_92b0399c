@@ -97,7 +97,7 @@ object ShizukuClipboardMonitor {
             while (isActive && i < BURST_TRIES) {
                 try {
                     val meta = readClipboardViaShizukuWithMeta(context)
-                    handleMeta(meta)
+                    handleMeta(meta) // suspend 安全调用
                     if (!meta.text.isNullOrEmpty()) break
                 } catch (_: Throwable) { }
                 delay(BURST_INTERVAL_MS)
@@ -113,7 +113,7 @@ object ShizukuClipboardMonitor {
             while (isActive) {
                 try {
                     val meta = readClipboardViaShizukuWithMeta(context)
-                    handleMeta(meta)
+                    handleMeta(meta) // suspend 安全调用
                 } catch (e: Throwable) {
                     LogUtils.e(TAG, "POLL_ERROR", e)
                 }
@@ -135,7 +135,8 @@ object ShizukuClipboardMonitor {
         return ClipMeta(text, label)
     }
 
-    private fun handleMeta(meta: ClipMeta) {
+    // 标记为 suspend：内部调用 suspend 的 repository.insertItem
+    private suspend fun handleMeta(meta: ClipMeta) {
         val text = meta.text ?: return
         if (text.isEmpty()) return
         if (meta.label == INTERNAL_LABEL) return // 自家写入过滤
