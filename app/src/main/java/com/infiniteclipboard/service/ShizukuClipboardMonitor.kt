@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// 全 Shizuku 后台监听：直接通过 SystemServiceHelper 直连 IClipboard 轮询读取（无绑定、无 shell、无无限重试）
+// Shizuku 直连后台监听（稳定版）：以 shell 身份（uid=2000, pkg=com.android.shell）访问 IClipboard，绕过后台读取门槛
 package com.infiniteclipboard.service
 
 import android.content.ClipData
@@ -21,21 +21,23 @@ object ShizukuClipboardMonitor {
     private const val TAG = "ShizukuMonitor"
     private const val REQ_CODE = 10086
 
+    // 关键：以 shell 身份对齐系统校验
+    private const val SHELL_UID = 2000
+    private const val SHELL_PKG = "com.android.shell"
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile private var pollJob: Job? = null
     @Volatile private var running = false
-    private val lastTextHash = AtomicLong(0L)
+    private val lastSavedHash = AtomicLong(Long.MIN_VALUE)
+    private val lastLoggedHash = AtomicLong(Long.MIN_VALUE)
 
     fun init(context: Context) {
         LogUtils.d(TAG, "init: binderReady=${safePing()} sdk=${Build.VERSION.SDK_INT}")
-        Shizuku.addBinderReceivedListener {
-            if (hasPermission()) start(context)
-        }
+        Shizuku.addBinderReceivedListener { if (hasPermission()) start(context) }
         Shizuku.addBinderDeadListener {
             stop()
-            // Binder 恢复后一小步兜底重启
             mainHandler.postDelayed({ if (hasPermission()) start(context) }, 600)
         }
         Shizuku.addRequestPermissionResultListener { _, grantResult ->
@@ -84,14 +86,18 @@ object ShizukuClipboardMonitor {
             val app = ClipboardApplication.instance
             while (isActive) {
                 try {
-                    val text = getClipboardTextViaShizuku(context)
-                    LogUtils.clipboard("Shizuku后台", text)
+                    val meta = readClipboardViaShizukuWithMeta(context)
+                    val text = meta.text
                     if (!text.isNullOrEmpty()) {
                         val h = text.hashCode().toLong()
-                        if (h != lastTextHash.get()) {
-                            lastTextHash.set(h)
+                        if (lastLoggedHash.get() != h) {
+                            LogUtils.clipboard("Shizuku后台", text)
+                            lastLoggedHash.set(h)
+                        }
+                        if (lastSavedHash.get() != h) {
                             try {
                                 val id = app.repository.insertItem(text)
+                                lastSavedHash.set(h)
                                 LogUtils.d(TAG, "SAVE_OK id=$id")
                             } catch (e: Throwable) {
                                 LogUtils.e(TAG, "SAVE_FAIL", e)
@@ -106,20 +112,17 @@ object ShizukuClipboardMonitor {
         }
     }
 
-    // —— 仅用 Shizuku 直连 SystemService（IClipboard） —— //
-    private fun getClipboardTextViaShizuku(ctx: Context): String? {
-        val proxy = obtainIClipboard() ?: return null
-        // 多签名尝试
-        invokeGetPrimaryClip(ctx, proxy)?.let { clip ->
-            clipDataToText(ctx, clip)?.let { if (it.isNotEmpty()) return it }
-        }
-        invokeGetPrimaryClipForUser(ctx, proxy)?.let { clip ->
-            clipDataToText(ctx, clip)?.let { if (it.isNotEmpty()) return it }
-        }
-        invokeGetPrimaryClipAsUser(ctx, proxy)?.let { clip ->
-            clipDataToText(ctx, clip)?.let { if (it.isNotEmpty()) return it }
-        }
-        return null
+    // ——— shell 身份直连 IClipboard，返回 label+text —— //
+    private data class ClipMeta(val text: String?, val label: String?)
+
+    private fun readClipboardViaShizukuWithMeta(ctx: Context): ClipMeta {
+        val proxy = obtainIClipboard() ?: return ClipMeta(null, null)
+        var clip: ClipData? = invokeGetPrimaryClip(ctx, proxy)
+        if (clip == null) clip = invokeGetPrimaryClipForUser(ctx, proxy)
+        if (clip == null) clip = invokeGetPrimaryClipAsUser(ctx, proxy)
+        val label = try { clip?.description?.label?.toString() } catch (_: Throwable) { null }
+        val text = if (clip != null) clipDataToText(ctx, clip) else null
+        return ClipMeta(text, label)
     }
 
     private fun obtainIClipboard(): Any? {
@@ -131,10 +134,11 @@ object ShizukuClipboardMonitor {
         } catch (_: Throwable) { null }
     }
 
-    // 兼容多形态 getPrimaryClip
+    // 兼容多形态 getPrimaryClip（全部按 shell 身份声明）
     private fun invokeGetPrimaryClip(ctx: Context, proxy: Any): ClipData? {
         val clazz = proxy.javaClass
-        // (AttributionSource, Int)
+
+        // (AttributionSource, Int userId)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
@@ -142,10 +146,11 @@ object ShizukuClipboardMonitor {
                 it.parameterTypes[0].name == "android.content.AttributionSource" &&
                 (it.parameterTypes[1] == Int::class.javaPrimitiveType || it.parameterTypes[1] == Integer::class.java)
         }?.let { m ->
-            val src = buildAttributionSourceOrNull(ctx)
-            val uid = myUserId() ?: 0
-            return try { if (src != null) m.invoke(proxy, src, uid) as? ClipData else null } catch (_: Throwable) { null }
+            val src = buildShellAttributionSource()
+            val userId = myUserId() ?: 0
+            return try { if (src != null) m.invoke(proxy, src, userId) as? ClipData else null } catch (_: Throwable) { null }
         }
+
         // (AttributionSource)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
@@ -153,10 +158,11 @@ object ShizukuClipboardMonitor {
                 it.parameterTypes.size == 1 &&
                 it.parameterTypes[0].name == "android.content.AttributionSource"
         }?.let { m ->
-            val src = buildAttributionSourceOrNull(ctx)
+            val src = buildShellAttributionSource()
             return try { if (src != null) m.invoke(proxy, src) as? ClipData else null } catch (_: Throwable) { null }
         }
-        // (String, String, Int)
+
+        // (String pkg, String feature, Int userId)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
@@ -165,10 +171,11 @@ object ShizukuClipboardMonitor {
                 it.parameterTypes[1] == String::class.java &&
                 (it.parameterTypes[2] == Int::class.javaPrimitiveType || it.parameterTypes[2] == Integer::class.java)
         }?.let { m ->
-            val uid = myUserId() ?: 0
-            return try { m.invoke(proxy, ctx.packageName, null, uid) as? ClipData } catch (_: Throwable) { null }
+            val userId = myUserId() ?: 0
+            return try { m.invoke(proxy, SHELL_PKG, null, userId) as? ClipData } catch (_: Throwable) { null }
         }
-        // (String, Int)
+
+        // (String pkg, Int userId)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
@@ -176,10 +183,11 @@ object ShizukuClipboardMonitor {
                 it.parameterTypes[0] == String::class.java &&
                 (it.parameterTypes[1] == Int::class.javaPrimitiveType || it.parameterTypes[1] == Integer::class.java)
         }?.let { m ->
-            val uid = myUserId() ?: 0
-            return try { m.invoke(proxy, ctx.packageName, uid) as? ClipData } catch (_: Throwable) { null }
+            val userId = myUserId() ?: 0
+            return try { m.invoke(proxy, SHELL_PKG, userId) as? ClipData } catch (_: Throwable) { null }
         }
-        // (String, String)
+
+        // (String pkg, String feature)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
@@ -187,17 +195,19 @@ object ShizukuClipboardMonitor {
                 it.parameterTypes[0] == String::class.java &&
                 it.parameterTypes[1] == String::class.java
         }?.let { m ->
-            return try { m.invoke(proxy, ctx.packageName, null) as? ClipData } catch (_: Throwable) { null }
+            return try { m.invoke(proxy, SHELL_PKG, null) as? ClipData } catch (_: Throwable) { null }
         }
-        // (String)
+
+        // (String pkg)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
                 it.returnType == ClipData::class.java &&
                 it.parameterCount == 1 &&
                 it.parameterTypes[0] == String::class.java
         }?.let { m ->
-            return try { m.invoke(proxy, ctx.packageName) as? ClipData } catch (_: Throwable) { null }
+            return try { m.invoke(proxy, SHELL_PKG) as? ClipData } catch (_: Throwable) { null }
         }
+
         // ()
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) &&
@@ -206,10 +216,11 @@ object ShizukuClipboardMonitor {
         }?.let { m ->
             return try { m.invoke(proxy) as? ClipData } catch (_: Throwable) { null }
         }
+
         return null
     }
 
-    // 极少系统的 forUser / asUser 变体
+    // forUser 变体（极少系统）
     private fun invokeGetPrimaryClipForUser(ctx: Context, proxy: Any): ClipData? {
         val clazz = proxy.javaClass
         clazz.methods.firstOrNull {
@@ -220,7 +231,7 @@ object ShizukuClipboardMonitor {
                 (it.parameterTypes[1] == Int::class.javaPrimitiveType || it.parameterTypes[1] == Integer::class.java)
         }?.let { m ->
             val userId = myUserId() ?: 0
-            return try { m.invoke(proxy, ctx.packageName, userId) as? ClipData } catch (_: Throwable) { null }
+            return try { m.invoke(proxy, SHELL_PKG, userId) as? ClipData } catch (_: Throwable) { null }
         }
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClipForUser", true) &&
@@ -234,6 +245,7 @@ object ShizukuClipboardMonitor {
         return null
     }
 
+    // asUser 变体（极少系统）
     private fun invokeGetPrimaryClipAsUser(ctx: Context, proxy: Any): ClipData? {
         val clazz = proxy.javaClass
         clazz.methods.firstOrNull {
@@ -244,7 +256,7 @@ object ShizukuClipboardMonitor {
                 (it.parameterTypes[1] == Int::class.javaPrimitiveType || it.parameterTypes[1] == Integer::class.java)
         }?.let { m ->
             val userId = myUserId() ?: 0
-            return try { m.invoke(proxy, ctx.packageName, userId) as? ClipData } catch (_: Throwable) { null }
+            return try { m.invoke(proxy, SHELL_PKG, userId) as? ClipData } catch (_: Throwable) { null }
         }
         return null
     }
@@ -264,16 +276,18 @@ object ShizukuClipboardMonitor {
         return sb.toString().trim().ifEmpty { null }
     }
 
-    private fun buildAttributionSourceOrNull(ctx: Context): Any? {
+    private fun buildShellAttributionSource(): Any? {
         return try {
-            val uid = android.os.Process.myUid()
             val cls = Class.forName("android.content.AttributionSource")
+            // (int uid, String pkg, String renounced)
             cls.constructors.firstOrNull { c ->
                 val p = c.parameterTypes
                 p.size == 3 && p[0] == Int::class.javaPrimitiveType && p[1] == String::class.java && p[2] == String::class.java
-            }?.newInstance(uid, ctx.packageName, null) ?: run {
+            }?.newInstance(SHELL_UID, SHELL_PKG, null) ?: run {
+                // Builder(int uid, String pkg)
                 val bCls = Class.forName("android.content.AttributionSource\$Builder")
-                val b = bCls.getConstructor(Int::class.javaPrimitiveType, String::class.java).newInstance(uid, ctx.packageName)
+                val b = bCls.getConstructor(Int::class.javaPrimitiveType, String::class.java)
+                    .newInstance(SHELL_UID, SHELL_PKG)
                 val build = bCls.getMethod("build")
                 build.invoke(b)
             }
