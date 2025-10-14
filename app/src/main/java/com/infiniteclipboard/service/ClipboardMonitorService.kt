@@ -37,7 +37,6 @@ class ClipboardMonitorService : Service() {
     private var lastClipboardContent: String? = null
     private var isPaused: Boolean = false
 
-    // 悬浮按钮
     private lateinit var wm: WindowManager
     private var floatBtn: View? = null
     private var floatParams: WindowManager.LayoutParams? = null
@@ -113,7 +112,6 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 供测试使用的方法名
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -185,8 +183,6 @@ class ClipboardMonitorService : Service() {
         nm.notify(NOTIFICATION_ID, createNotification())
     }
 
-    // ============ 悬浮按钮（点击后拉起透明前台 TapRecordActivity 读取剪贴板） ============
-
     private fun ensureEdgeBar() {
         if (floatBtn != null) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
@@ -237,7 +233,6 @@ class ClipboardMonitorService : Service() {
             }
         }
 
-        // 拖拽与点击分离：小位移视为点击，调用 performClick()
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         var downX = 0f
         var downY = 0f
@@ -268,9 +263,7 @@ class ClipboardMonitorService : Service() {
                     val totalDy = kotlin.math.abs(ev.rawY - downY)
                     val duration = SystemClock.uptimeMillis() - downTime
                     val isClick = (totalDx <= touchSlop && totalDy <= touchSlop && duration < 300)
-                    if (isClick) {
-                        v.performClick()
-                    }
+                    if (isClick) v.performClick()
                     true
                 }
                 else -> false
