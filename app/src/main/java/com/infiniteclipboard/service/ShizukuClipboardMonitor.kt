@@ -1,5 +1,4 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// 终局方案-客户端：只负责连接 Shizuku UserService，调用其接口读取剪贴板，不再在本进程做任何反射。
 package com.infiniteclipboard.service
 
 import android.content.ComponentName
@@ -103,9 +102,17 @@ object ShizukuClipboardMonitor {
                 .version(1)
         }
         try {
+            // 显式预启动 UserService，避免部分环境 bind 超时
+            try {
+                Shizuku.startUserService(userServiceArgs)
+                LogUtils.d(TAG, "START_USER_SERVICE invoked")
+            } catch (t: Throwable) {
+                LogUtils.e(TAG, "START_USER_SERVICE failed (ignored if already running)", t)
+            }
+
             binding = true
             Shizuku.bindUserService(userServiceArgs, connection)
-            scheduleBindTimeout(context)
+            scheduleBindTimeout(context, timeoutMs = 8000L)
             LogUtils.d(TAG, "BIND_START")
         } catch (t: Throwable) {
             binding = false
@@ -168,9 +175,9 @@ object ShizukuClipboardMonitor {
         }
         return success
     }
-    
+
     @Volatile private var bindTimeoutRunnable: Runnable? = null
-    private fun scheduleBindTimeout(context: Context, timeoutMs: Long = 4000L) {
+    private fun scheduleBindTimeout(context: Context, timeoutMs: Long = 8000L) {
         cancelBindTimeout()
         bindTimeoutRunnable = Runnable {
             if (userService == null && binding) {
@@ -192,7 +199,6 @@ object ShizukuClipboardMonitor {
         LogUtils.d(TAG, "RECONNECT reason=$reason in ${backoff}ms")
         scope.launch {
             delay(backoff)
-            // 在主线程启动，确保 Shizuku API 调用安全
             withContext(Dispatchers.Main) {
                 context?.let { start(it) }
             }
