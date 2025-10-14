@@ -11,9 +11,10 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.drawable GradientDrawable
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.*
 import android.view.ViewConfiguration
@@ -263,12 +264,12 @@ class ClipboardMonitorService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    val totalDx = Math.abs(ev.rawX - downX)
-                    val totalDy = Math.abs(ev.rawY - downY)
+                    val totalDx = kotlin.math.abs(ev.rawX - downX)
+                    val totalDy = kotlin.math.abs(ev.rawY - downY)
                     val duration = SystemClock.uptimeMillis() - downTime
                     val isClick = (totalDx <= touchSlop && totalDy <= touchSlop && duration < 300)
                     if (isClick) {
-                        v.performClick() // 触发上面的 onClick → 拉起前台读取
+                        v.performClick()
                     }
                     true
                 }
