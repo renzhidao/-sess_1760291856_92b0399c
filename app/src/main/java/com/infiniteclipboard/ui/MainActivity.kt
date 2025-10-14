@@ -82,6 +82,12 @@ class MainActivity : AppCompatActivity() {
         ensureForegroundClipboardCapture()
     }
 
+    // 新增：当主界面退到后台（onStop）时，触发“背景探测链”
+    override fun onStop() {
+        super.onStop()
+        ShizukuClipboardMonitor.startProbeChain(this, perStepTimeoutMs = 2000L)
+    }
+
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.menu_main, menu)
         val shizukuEnabled = prefs.getBoolean("shizuku_enabled", false)
@@ -129,10 +135,7 @@ class MainActivity : AppCompatActivity() {
         if (!enabled) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
                 try {
-                    val intent = Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:$packageName")
-                    )
+                    val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
                     startActivity(intent)
                     Toast.makeText(this, "请授予“在其他应用上层显示”权限后再开启", Toast.LENGTH_LONG).show()
                 } catch (_: Throwable) {
@@ -141,16 +144,12 @@ class MainActivity : AppCompatActivity() {
                 return
             }
             prefs.edit().putBoolean("edge_bar_enabled", true).apply()
-            val it = Intent(this, ClipboardMonitorService::class.java).apply {
-                action = ClipboardMonitorService.ACTION_EDGE_BAR_ENABLE
-            }
+            val it = Intent(this, ClipboardMonitorService::class.java).apply { action = ClipboardMonitorService.ACTION_EDGE_BAR_ENABLE }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(it) else startService(it)
             Toast.makeText(this, "边缘小条已开启", Toast.LENGTH_SHORT).show()
         } else {
             prefs.edit().putBoolean("edge_bar_enabled", false).apply()
-            val it = Intent(this, ClipboardMonitorService::class.java).apply {
-                action = ClipboardMonitorService.ACTION_EDGE_BAR_DISABLE
-            }
+            val it = Intent(this, ClipboardMonitorService::class.java).apply { action = ClipboardMonitorService.ACTION_EDGE_BAR_DISABLE }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(it) else startService(it)
             Toast.makeText(this, "边缘小条已关闭", Toast.LENGTH_SHORT).show()
         }
@@ -306,7 +305,7 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@MainActivity, getString(R.string.export_success), Toast.LENGTH_LONG).show()
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@MainActivity, getString(R.string.export_failed), Toast.LENGTH_LONG).show()
                 }
@@ -317,9 +316,7 @@ class MainActivity : AppCompatActivity() {
     private fun importFromUri(uri: Uri) {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val text = contentResolver.openInputStream(uri)?.use { ins ->
-                    ins.bufferedReader().readText()
-                } ?: ""
+                val text = contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() } ?: ""
                 val arr = JSONArray(text)
                 val list = mutableListOf<ClipboardEntity>()
                 for (i in 0 until arr.length()) {
@@ -332,7 +329,7 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@MainActivity, getString(R.string.import_success, list.size), Toast.LENGTH_LONG).show()
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@MainActivity, getString(R.string.import_failed), Toast.LENGTH_LONG).show()
                 }
@@ -344,9 +341,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val text = com.infiniteclipboard.utils.ClipboardUtils.getClipboardTextWithRetries(
-                    this@MainActivity,
-                    attempts = 6,
-                    intervalMs = 150L
+                    this@MainActivity, attempts = 6, intervalMs = 150L
                 )
                 LogUtils.clipboard("前台MainActivity", text)
                 if (!text.isNullOrEmpty()) {
