@@ -39,7 +39,6 @@ class ClipboardMonitorService : Service() {
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
 
-        // 开关开启则启动 Shizuku 监听（解耦生命周期：不在 onDestroy 自动 stop）
         val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
         if (enableShizuku) ShizukuClipboardMonitor.start(this)
 
@@ -52,6 +51,9 @@ class ClipboardMonitorService : Service() {
             ACTION_CLEAR_ALL -> clearAll()
             ACTION_SHIZUKU_START -> ShizukuClipboardMonitor.start(this)
             ACTION_SHIZUKU_STOP -> ShizukuClipboardMonitor.stop()
+            // 兼容保留：当前为 no-op
+            ACTION_EDGE_BAR_ENABLE -> { /* no-op */ }
+            ACTION_EDGE_BAR_DISABLE -> { /* no-op */ }
         }
         updateNotification()
         return START_STICKY
@@ -62,7 +64,7 @@ class ClipboardMonitorService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) { }
-        // 关键：不再这里 stop，让监控常驻由应用/开关控制
+        // 不在此处 stop Shizuku，让其由应用开关控制、保持自恢复
         serviceScope.cancel()
     }
 
@@ -86,7 +88,7 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 保留供测试调用
+    // 供测试使用的方法名
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -125,11 +127,18 @@ class ClipboardMonitorService : Service() {
     }
 
     private fun createNotification(): Notification {
-        val openIntent = Intent(this, ClipboardMonitorService::class.java).apply { action = ACTION_TOGGLE }
-        val openPendingIntent = PendingIntent.getService(this, 0, openIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val toggleIntent = Intent(this, ClipboardMonitorService::class.java).apply { action = ACTION_TOGGLE }
+        val togglePendingIntent = PendingIntent.getService(
+            this, 1, toggleIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
         val clearIntent = Intent(this, ClipboardMonitorService::class.java).apply { action = ACTION_CLEAR_ALL }
-        val clearPendingIntent = PendingIntent.getService(this, 2, clearIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val clearPendingIntent = PendingIntent.getService(
+            this, 2, clearIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // 测试要求：通知需设置点击事件，这里点击即触发“暂停/恢复”切换
+        val contentPendingIntent = togglePendingIntent
 
         val toggleTitle = if (isPaused) getString(R.string.notification_action_resume) else getString(R.string.notification_action_pause)
         val toggleIcon = if (isPaused) R.drawable.ic_play else R.drawable.ic_pause
@@ -139,10 +148,10 @@ class ClipboardMonitorService : Service() {
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentIntent(openPendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .addAction(toggleIcon, toggleTitle, openPendingIntent)
+            .setContentIntent(contentPendingIntent) // 添加点击事件以通过测试
+            .addAction(toggleIcon, toggleTitle, togglePendingIntent)
             .addAction(R.drawable.ic_clear_all, getString(R.string.notification_action_clear_all), clearPendingIntent)
             .build()
     }
@@ -160,6 +169,8 @@ class ClipboardMonitorService : Service() {
         private const val ACTION_CLEAR_ALL = "com.infiniteclipboard.action.CLEAR_ALL"
         const val ACTION_SHIZUKU_START = "com.infiniteclipboard.action.SHIZUKU_START"
         const val ACTION_SHIZUKU_STOP = "com.infiniteclipboard.action.SHIZUKU_STOP"
+        const val ACTION_EDGE_BAR_ENABLE = "com.infiniteclipboard.action.EDGE_BAR_ENABLE"
+        const val ACTION_EDGE_BAR_DISABLE = "com.infiniteclipboard.action.EDGE_BAR_DISABLE"
 
         fun start(context: Context) {
             val intent = Intent(context, ClipboardMonitorService::class.java)
