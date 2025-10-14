@@ -25,8 +25,8 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.LinearLayoutManager
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.data.ClipboardEntity
@@ -75,13 +75,10 @@ class MainActivity : AppCompatActivity() {
         checkPermissions()
         observeData()
 
-        // 初始化 Shizuku 回调
         ShizukuClipboardMonitor.init(this)
-
         ClipboardMonitorService.start(this)
     }
 
-    // 新增：进入前台时，强制抓取系统剪贴板并入库（不拉起前台时段由你控制，这里仅在你真的打开主界面时触发）
     override fun onResume() {
         super.onResume()
         ensureForegroundClipboardCapture()
@@ -146,7 +143,6 @@ class MainActivity : AppCompatActivity() {
                 return
             }
             prefs.edit().putBoolean("edge_bar_enabled", true).apply()
-            ClipboardMonitorService.start(this)
             val it = Intent(this, ClipboardMonitorService::class.java).apply {
                 action = ClipboardMonitorService.ACTION_EDGE_BAR_ENABLE
             }
@@ -281,23 +277,16 @@ class MainActivity : AppCompatActivity() {
                 }
                 .setNegativeButton(R.string.cancel, null)
                 .show()
-        }
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
         val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-        val enabled = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-        val expected = ComponentName(this, ClipboardAccessibilityService::class.java).flattenToString()
-        if (enabled.any {
-                val si = it.resolveInfo.serviceInfo
-                "${si.packageName}/${si.name}".equals(expected, ignoreCase = true)
-            }) return true
-
-        val flat = Settings.Secure.getString(
-            contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-        )
-        val expected2 = "${packageName}/${ClipboardAccessibilityService::class.java.name}"
-        return flat?.split(':')?.any { it.equals(expected2, ignoreCase = true) } == true
+        val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+        val expectedComponentName = ComponentName(this, ClipboardAccessibilityService::class.java).flattenToString()
+        return enabledServices.any {
+            val componentName = it.resolveInfo.serviceInfo.run { "$packageName/$name" }
+            componentName.equals(expectedComponentName, ignoreCase = true)
+        }
     }
 
     private fun exportToUri(uri: Uri) {
@@ -314,7 +303,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 contentResolver.openOutputStream(uri)?.use { os ->
                     os.write(arr.toString(2).toByteArray(Charsets.UTF_8))
-                    os.flush()
                 }
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@MainActivity, getString(R.string.export_success), Toast.LENGTH_LONG).show()
@@ -330,16 +318,9 @@ class MainActivity : AppCompatActivity() {
     private fun importFromUri(uri: Uri) {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val sb = StringBuilder()
-                contentResolver.openInputStream(uri)?.use { ins ->
-                    BufferedReader(InputStreamReader(ins, Charsets.UTF_8)).use { br ->
-                        var line: String?
-                        while (br.readLine().also { line = it } != null) {
-                            sb.append(line).append('\n')
-                        }
-                    }
-                }
-                val text = sb.toString()
+                val text = contentResolver.openInputStream(uri)?.use { ins ->
+                    ins.bufferedReader().readText()
+                } ?: ""
                 val arr = JSONArray(text)
                 val list = mutableListOf<ClipboardEntity>()
                 for (i in 0 until arr.length()) {
@@ -360,7 +341,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // 进入前台必抓取：短延迟重试并入库（重复内容会被仓库去重）
     private fun ensureForegroundClipboardCapture() {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
@@ -371,7 +351,7 @@ class MainActivity : AppCompatActivity() {
                 )
                 LogUtils.clipboard("前台MainActivity", text)
                 if (!text.isNullOrEmpty()) {
-                    repository.insertItem(text) // 内部已按内容去重
+                    repository.insertItem(text)
                 }
             } catch (e: Throwable) {
                 LogUtils.e("MainActivity", "前台入库失败", e)

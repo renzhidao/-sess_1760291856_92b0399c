@@ -16,19 +16,16 @@ class TapRecordActivity : AppCompatActivity() {
         overridePendingTransition(0, 0)
         super.onCreate(savedInstanceState)
     }
-    
+
     override fun onResume() {
         super.onResume()
         lifecycleScope.launch(Dispatchers.IO) {
-            // 增加重试：6次，间隔150ms
             val text = ClipboardUtils.getClipboardTextWithRetries(
-                this@TapRecordActivity, 
-                attempts = 6, 
+                this@TapRecordActivity,
+                attempts = 6,
                 intervalMs = 150L
             )
-            
             LogUtils.clipboard("前台Activity", text)
-            
             if (!text.isNullOrEmpty()) {
                 try {
                     val repo = (application as ClipboardApplication).repository
@@ -38,13 +35,4 @@ class TapRecordActivity : AppCompatActivity() {
                     LogUtils.e("TapRecordActivity", "前台入库失败", e)
                 }
             } else {
-                LogUtils.d("TapRecordActivity", "前台读取失败：内容为空")
-            }
-            
-            withContext(Dispatchers.Main) {
-                finish()
-                overridePendingTransition(0, 0)
-            }
-        }
-    }
-}
+                
