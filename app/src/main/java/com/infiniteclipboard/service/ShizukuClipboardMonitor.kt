@@ -1,17 +1,14 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// 仅用 Shizuku 的稳定方案：绑定 Shizuku UserService（运行于 :shizuku/shell 身份）读取系统 IClipboard，规避后台限制。
-// 特点：
-// - 不再在应用进程里直接反射 IClipboard（避免 checkPackage/后台限制）；改为在 :shizuku 进程调用（UID=shell）。
-// - 绑定加 startUserService + 超时 + 退避重试；连接成功后轮询入库（协程/IO）。
-// - 提供 onPrimaryClipChanged 突发拉读（不必等下一拍轮询）。
+// 只用 Shizuku（UserService）稳定后台读取：移除不可用的 Shizuku.startUserService 调用，
+// 通过 bindUserService 启动 + 连接，轮询/突发读取入库，携带超时与退避重连。
 package com.infiniteclipboard.service
 
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Handler
-import android.os.Looper
 import android.os.IBinder
+import android.os.Looper
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.IClipboardUserService
 import com.infiniteclipboard.utils.LogUtils
@@ -106,15 +103,8 @@ object ShizukuClipboardMonitor {
                 .version(1)
         }
         try {
-            // 先显式启动，再绑定（某些机型仅 bind 不拉起）
-            try {
-                Shizuku.startUserService(args)
-                LogUtils.d(TAG, "START_USER_SERVICE: ok")
-            } catch (e: Throwable) {
-                LogUtils.e(TAG, "START_USER_SERVICE: fail", e)
-            }
             binding = true
-            Shizuku.bindUserService(args, conn)
+            Shizuku.bindUserService(args, conn) // 注意：bind 会自动拉起 UserService（无需 startUserService）
             scheduleBindTimeout(context)
             LogUtils.d(TAG, "BIND_START")
         } catch (t: Throwable) {
@@ -137,7 +127,7 @@ object ShizukuClipboardMonitor {
         userService = null
     }
 
-    // 剪贴板变更时触发一次“突发读取”（不等下一拍轮询）
+    // 系统剪贴板变更时，触发一轮突发读取（不等下一拍轮询）
     fun onPrimaryClipChanged(context: Context) {
         if (!hasPermission() || !isAvailable()) return
         if (!running) start(context)
@@ -162,7 +152,7 @@ object ShizukuClipboardMonitor {
     private suspend fun tryReadOnce() {
         val svc = userService ?: return
         try {
-            val text = svc.getClipboardText() // 在 :shizuku（shell）进程读取，绕过后台限制
+            val text = svc.getClipboardText() // 在 :shizuku（shell）进程读取
             if (!text.isNullOrEmpty()) {
                 val h = text.hashCode().toLong()
                 if (h != lastHash.get()) {
@@ -200,7 +190,7 @@ object ShizukuClipboardMonitor {
     private fun computeBackoff(): Long {
         val a = retry.getAndIncrement()
         val shift = if (a < 3) a else 3 // 0,1,2,3 => x1,x2,x4,x8
-        var d = 700L shl shift // 700,1400,2800,5600
+        var d = 700L shl shift // 700, 1400, 2800, 5600
         if (d > 7000L) d = 7000L
         return d
     }
