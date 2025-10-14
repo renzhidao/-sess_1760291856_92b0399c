@@ -11,11 +11,12 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable GradientDrawable
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
 import android.view.*
+import android.view.ViewConfiguration
 import android.widget.ImageView
 import androidx.core.app.NotificationCompat
 import androidx.core.view.ViewCompat
@@ -56,7 +57,6 @@ class ClipboardMonitorService : Service() {
         val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
         if (enableShizuku) ShizukuClipboardMonitor.start(this)
 
-        // 如果用户已开启悬浮按钮开关，则恢复
         if (prefs.getBoolean("edge_bar_enabled", false)) {
             ensureEdgeBar()
         }
@@ -89,7 +89,6 @@ class ClipboardMonitorService : Service() {
         super.onDestroy()
         try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) { }
         removeEdgeBar()
-        // 不在此处 stop Shizuku，让其由应用开关控制、保持自恢复
         serviceScope.cancel()
     }
 
@@ -162,7 +161,6 @@ class ClipboardMonitorService : Service() {
             this, 2, clearIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // 通知点击行为（满足测试）
         val contentPendingIntent = togglePendingIntent
 
         val toggleTitle = if (isPaused) getString(R.string.notification_action_resume) else getString(R.string.notification_action_pause)
@@ -175,7 +173,7 @@ class ClipboardMonitorService : Service() {
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setContentIntent(contentPendingIntent) // 测试要求：点击事件
+            .setContentIntent(contentPendingIntent)
             .addAction(toggleIcon, toggleTitle, togglePendingIntent)
             .addAction(R.drawable.ic_clear_all, getString(R.string.notification_action_clear_all), clearPendingIntent)
             .build()
@@ -216,7 +214,6 @@ class ClipboardMonitorService : Service() {
         }
 
         val btn = ImageView(this).apply {
-            // 背景：半透明圆形
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(0x66000000)
@@ -237,32 +234,45 @@ class ClipboardMonitorService : Service() {
                     LogUtils.e("ClipboardService", "拉起前台读取失败", t)
                 }
             }
+        }
 
-            // 简易拖拽
-            var lastX = 0f
-            var lastY = 0f
-            var startX = 0
-            var startY = 0
-            setOnTouchListener { v, ev ->
-                when (ev.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        lastX = ev.rawX
-                        lastY = ev.rawY
-                        startX = params.x
-                        startY = params.y
-                        true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = (ev.rawX - lastX).toInt()
-                        val dy = (ev.rawY - lastY).toInt()
-                        params.x = startX + dx
-                        params.y = startY + dy
-                        try { wm.updateViewLayout(v, params) } catch (_: Throwable) {}
-                        true
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
-                    else -> false
+        // 拖拽与点击分离：小位移视为点击，调用 performClick()
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
+        var downX = 0f
+        var downY = 0f
+        var startX = 0
+        var startY = 0
+        var downTime = 0L
+
+        btn.setOnTouchListener { v, ev ->
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = ev.rawX
+                    downY = ev.rawY
+                    startX = params.x
+                    startY = params.y
+                    downTime = SystemClock.uptimeMillis()
+                    true
                 }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (ev.rawX - downX).toInt()
+                    val dy = (ev.rawY - downY).toInt()
+                    params.x = startX + dx
+                    params.y = startY + dy
+                    try { wm.updateViewLayout(v, params) } catch (_: Throwable) { }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val totalDx = Math.abs(ev.rawX - downX)
+                    val totalDy = Math.abs(ev.rawY - downY)
+                    val duration = SystemClock.uptimeMillis() - downTime
+                    val isClick = (totalDx <= touchSlop && totalDy <= touchSlop && duration < 300)
+                    if (isClick) {
+                        v.performClick() // 触发上面的 onClick → 拉起前台读取
+                    }
+                    true
+                }
+                else -> false
             }
         }
 
