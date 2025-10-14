@@ -3,35 +3,23 @@ package com.infiniteclipboard.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import com.infiniteclipboard.ClipboardApplication
-import com.infiniteclipboard.ui.TapRecordActivity
 import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
 import kotlin.math.max
 import kotlin.math.min
 
+// 精简为“仅提供复制/剪切/粘贴能力”，不再主动拉起前台读取，避免用户未输入就跳的情况
 class ClipboardAccessibilityService : AccessibilityService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private lateinit var clipboardManager: ClipboardManager
-    private val repository by lazy { (application as ClipboardApplication).repository }
-    private var lastClipboardContent: String? = null
-
-    private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
-        handleClipboardChange()
-    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -40,18 +28,12 @@ class ClipboardAccessibilityService : AccessibilityService() {
                     AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                     AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
-        clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboardManager.addPrimaryClipChangedListener(clipboardListener)
         instanceRef = WeakReference(this)
-        LogUtils.d("AccessibilityService", "辅助服务已启动，剪切板监听已注册")
+        LogUtils.d("AccessibilityService", "辅助服务已启动")
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        when (event?.eventType) {
-            AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
-            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> handleClipboardChange()
-        }
-    }
+    // 不再基于无障碍事件触发任何前台读取（由 ClipboardMonitorService 统一处理剪贴板变化）
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) { /* no-op */ }
 
     override fun onInterrupt() {
         LogUtils.d("AccessibilityService", "服务被中断")
@@ -59,40 +41,9 @@ class ClipboardAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) { }
         serviceScope.cancel()
         instanceRef = null
         LogUtils.d("AccessibilityService", "服务已销毁")
-    }
-
-    private fun handleClipboardChange() {
-        val prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
-        val shizukuEnabled = prefs.getBoolean("shizuku_enabled", false)
-        val shizukuActive = shizukuEnabled && ShizukuClipboardMonitor.isRunning()
-
-        serviceScope.launch(Dispatchers.IO) {
-            try {
-                val clip = clipboardManager.primaryClip
-                val label = try { clip?.description?.label?.toString() } catch (_: Throwable) { null }
-                if (label == "com.infiniteclipboard") {
-                    LogUtils.d("AccessibilityService", "内部写入，跳过")
-                    return@launch
-                }
-
-                if (shizukuActive) {
-                    LogUtils.d("AccessibilityService", "Shizuku已运行，交由Shizuku后台读取")
-                    return@launch
-                }
-
-                val it = Intent(this@ClipboardAccessibilityService, TapRecordActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                }
-                startActivity(it)
-                LogUtils.d("AccessibilityService", "Shizuku未运行，拉起前台读取Activity")
-            } catch (e: Exception) {
-                LogUtils.e("AccessibilityService", "处理剪切板失败", e)
-            }
-        }
     }
 
     companion object {
@@ -148,6 +99,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } else null
         }
 
+        // 复制：有选区→复制选区；无选区→全选后复制；同时写入系统剪贴板
         fun captureCopy(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -158,6 +110,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
                 selectAll(node)
             }
             node.performAction(AccessibilityNodeInfo.ACTION_COPY)
+
             if (!textToRecord.isNullOrEmpty()) {
                 ClipboardUtils.setClipboardText(svc, textToRecord)
                 LogUtils.clipboard("无障碍复制", textToRecord)
@@ -165,6 +118,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return textToRecord
         }
 
+        // 剪切：失败则手动置空
         fun captureCut(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -184,9 +138,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } else {
                 cutText = full
                 val cutOk = node.performAction(AccessibilityNodeInfo.ACTION_CUT)
-                if (!cutOk) {
-                    setText(node, "")
-                }
+                if (!cutOk) setText(node, "")
             }
 
             if (!cutText.isNullOrEmpty()) {
@@ -196,16 +148,13 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return cutText
         }
 
+        // 粘贴：优先 ACTION_PASTE；失败则直接 SET_TEXT
         fun performPaste(text: String?): Boolean {
             val svc = instanceRef?.get() ?: return false
             val node = focusedEditableNode(svc) ?: return false
             return try {
-                if (!text.isNullOrEmpty()) {
-                    ClipboardUtils.setClipboardText(svc, text)
-                }
+                if (!text.isNullOrEmpty()) ClipboardUtils.setClipboardText(svc, text)
                 if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) return true
                 if (!text.isNullOrEmpty()) setText(node, text) else false
             } catch (_: Throwable) { false }
         }
-    }
-}
