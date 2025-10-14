@@ -1,4 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardAccessibilityService.kt
+// 无障碍服务：仅提供复制/剪切/粘贴能力；不主动拉起前台读取，避免“未输入就跳”。
 package com.infiniteclipboard.service
 
 import android.accessibilityservice.AccessibilityService
@@ -16,7 +17,6 @@ import java.lang.ref.WeakReference
 import kotlin.math.max
 import kotlin.math.min
 
-// 精简为“仅提供复制/剪切/粘贴能力”，不再主动拉起前台读取，避免用户未输入就跳的情况
 class ClipboardAccessibilityService : AccessibilityService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -32,7 +32,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
         LogUtils.d("AccessibilityService", "辅助服务已启动")
     }
 
-    // 不再基于无障碍事件触发任何前台读取（由 ClipboardMonitorService 统一处理剪贴板变化）
+    // 不基于无障碍事件触发任何前台读取
     override fun onAccessibilityEvent(event: AccessibilityEvent?) { /* no-op */ }
 
     override fun onInterrupt() {
@@ -99,7 +99,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } else null
         }
 
-        // 复制：有选区→复制选区；无选区→全选后复制；同时写入系统剪贴板
+        // 复制：有选区→复制选区；无选区→全选后复制；同步系统剪贴板并返回文本
         fun captureCopy(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -118,7 +118,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return textToRecord
         }
 
-        // 剪切：失败则手动置空
+        // 剪切：失败则用 SET_TEXT 兜底；同步系统剪贴板并返回文本
         fun captureCut(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -158,3 +158,5 @@ class ClipboardAccessibilityService : AccessibilityService() {
                 if (!text.isNullOrEmpty()) setText(node, text) else false
             } catch (_: Throwable) { false }
         }
+    }
+}
