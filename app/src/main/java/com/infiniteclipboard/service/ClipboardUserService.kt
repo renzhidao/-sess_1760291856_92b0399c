@@ -1,4 +1,3 @@
-文件: app/src/main/java/com/infiniteclipboard/service/ClipboardUserService.kt
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardUserService.kt
 // Shizuku UserService：真正的 Service，onBind 返回 AIDL Stub（在 :shizuku 进程中运行）
 package com.infiniteclipboard.service
