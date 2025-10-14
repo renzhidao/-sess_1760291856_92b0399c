@@ -1,4 +1,6 @@
+文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
+// Shizuku 监控：绑定 UserService（防并发绑定）、daemon 常驻、成功后轮询后台读取
 package com.infiniteclipboard.service
 
 import android.content.ComponentName
@@ -13,7 +15,6 @@ import com.infiniteclipboard.IClipboardUserService
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 import rikka.shizuku.Shizuku
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 object ShizukuClipboardMonitor {
@@ -26,9 +27,9 @@ object ShizukuClipboardMonitor {
     @Volatile private var pollJob: Job? = null
     @Volatile private var userService: IClipboardUserService? = null
     @Volatile private var running = false
+    @Volatile private var binding = false
 
     private val lastTextHash = AtomicLong(0L)
-    private val hiddenReady = AtomicBoolean(false)
 
     private lateinit var userServiceArgs: Shizuku.UserServiceArgs
 
@@ -36,6 +37,7 @@ object ShizukuClipboardMonitor {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             userService = IClipboardUserService.Stub.asInterface(service)
             running = true
+            binding = false
             LogUtils.d(TAG, "UserService 已连接")
             startPolling()
         }
@@ -47,9 +49,7 @@ object ShizukuClipboardMonitor {
     }
 
     fun init(context: Context) {
-        val binderReady = safePing()
-        LogUtils.d(TAG, "init: binderReady=$binderReady sdk=${Build.VERSION.SDK_INT}")
-
+        LogUtils.d(TAG, "init: binderReady=${safePing()} sdk=${Build.VERSION.SDK_INT}")
         Shizuku.addBinderReceivedListener {
             LogUtils.d(TAG, "Binder received")
             if (hasPermission()) start(context)
@@ -89,24 +89,30 @@ object ShizukuClipboardMonitor {
     fun start(context: Context) {
         val avail = isAvailable()
         val perm = hasPermission()
-        LogUtils.d(TAG, "start(): available=$avail permission=$perm")
+        LogUtils.d(TAG, "start(): available=$avail permission=$perm running=$running binding=$binding")
         if (!avail || !perm) {
             LogUtils.d(TAG, "不可用或未授权，start 跳过")
+            return
+        }
+        if (running || binding) {
+            LogUtils.d(TAG, "已连接或正在绑定，跳过")
             return
         }
         if (!::userServiceArgs.isInitialized) {
             userServiceArgs = Shizuku.UserServiceArgs(
                 ComponentName(context, ClipboardUserService::class.java)
             )
-                .processNameSuffix("shizuku")
-                .daemon(false)
+                .processNameSuffix("shizuku") // 对应 android:process=":shizuku"
+                .daemon(true)                 // 常驻，减少断开
                 .tag("clipboard")
                 .version(1)
         }
         try {
+            binding = true
             Shizuku.bindUserService(userServiceArgs, connection)
             LogUtils.d(TAG, "正在绑定 UserService...")
         } catch (e: Throwable) {
+            binding = false
             LogUtils.e(TAG, "绑定 UserService 失败", e)
         }
     }
@@ -150,12 +156,13 @@ object ShizukuClipboardMonitor {
         pollJob?.cancel()
         pollJob = null
         running = false
+        binding = false
         try {
             userService?.destroy()
             if (::userServiceArgs.isInitialized) {
                 Shizuku.unbindUserService(userServiceArgs, connection, true)
             }
-        } catch (_: Throwable) {}
+        } catch (_: Throwable) { }
         userService = null
     }
 }
