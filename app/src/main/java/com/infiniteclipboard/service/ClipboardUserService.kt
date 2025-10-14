@@ -1,5 +1,4 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardUserService.kt
-// 终局方案-服务端：在 :shizuku 进程（shell权限）内运行，负责所有 IClipboard 反射操作，为客户端提供稳定的后台读取能力。
 package com.infiniteclipboard.service
 
 import android.app.Service
@@ -9,6 +8,7 @@ import android.content.Intent
 import android.os.IBinder
 import android.util.Log
 import com.infiniteclipboard.IClipboardUserService
+import com.infiniteclipboard.utils.LogUtils
 import rikka.shizuku.SystemServiceHelper
 import java.lang.reflect.Method
 
@@ -16,70 +16,86 @@ class ClipboardUserService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "UserService onCreate in process ${android.os.Process.myUid()}")
+        // 新增：初始化文件日志，并打印关键进程/UID信息，便于确认服务是否真正启动
+        try { LogUtils.init(applicationContext) } catch (_: Throwable) {}
+        val msg = "onCreate in :shizuku uid=${android.os.Process.myUid()} pid=${android.os.Process.myPid()} pkg=$packageName"
+        Log.d(TAG, msg)
+        LogUtils.d(TAG, msg)
     }
 
     private val binder = object : IClipboardUserService.Stub() {
         override fun getClipboardText(): String? {
-            return getClipboardTextViaShizuku(this@ClipboardUserService)
+            LogUtils.d(TAG, "getClipboardText() invoked")
+            val text = getClipboardTextViaShizuku(this@ClipboardUserService)
+            LogUtils.d(TAG, "getClipboardText() result.length=${text?.length ?: 0}")
+            return text
         }
 
         override fun destroy() {
+            LogUtils.d(TAG, "destroy() invoked, stopping service")
             try { stopSelf() } catch (_: Throwable) { }
         }
     }
 
     override fun onBind(intent: Intent?): IBinder {
         Log.d(TAG, "onBind: returning binder")
+        LogUtils.d(TAG, "onBind() called, intent=$intent")
         return binder
     }
 
-    // ===== 以下为 IClipboard 反射读取核心逻辑，现在完全在本服务内执行 =====
+    // ===== IClipboard 反射读取逻辑（保持不变，补充失败日志） =====
 
     private fun getClipboardTextViaShizuku(ctx: Context): String? {
-        val proxy = obtainIClipboard() ?: return null
-        val (clip, _) = getPrimaryClipAllShapes(ctx, proxy)
+        val proxy = obtainIClipboard()
+        if (proxy == null) {
+            LogUtils.e(TAG, "obtainIClipboard() == null")
+            return null
+        }
+        val (clip, shape) = getPrimaryClipAllShapes(ctx, proxy)
+        LogUtils.d(TAG, "getPrimaryClip via $shape, clipItems=${clip?.itemCount ?: 0}")
         return clipDataToText(ctx, clip)
     }
 
     private fun obtainIClipboard(): Any? {
         return try {
-            val raw = SystemServiceHelper.getSystemService("clipboard") as? IBinder ?: return null
+            val raw = SystemServiceHelper.getSystemService("clipboard") as? IBinder ?: run {
+                LogUtils.e(TAG, "SystemServiceHelper.getSystemService(\"clipboard\") returned null")
+                return null
+            }
             val stub = Class.forName("android.content.IClipboard\$Stub")
             val asInterface = stub.getMethod("asInterface", IBinder::class.java)
             asInterface.invoke(null, raw)
-        } catch (_: Throwable) { null }
+        } catch (t: Throwable) {
+            LogUtils.e(TAG, "obtainIClipboard() failed", t)
+            null
+        }
     }
 
     private fun getPrimaryClipAllShapes(ctx: Context, proxy: Any): Pair<ClipData?, String> {
         val clazz = proxy.javaClass
         val userId = myUserId() ?: 0
-
-        // 优先使用带包名参数的签名，因为这是最常见的形式
-        // 在 :shizuku 进程里，packageName 仍然是我们的应用包名，但 UID 是 shell，这样组合才能通过系统校验
         val pkgName = ctx.packageName
 
         // (String, Int)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) && it.parameterCount == 2 &&
-            it.parameterTypes[0] == String::class.java &&
-            (it.parameterTypes[1] == Int::class.javaPrimitiveType || it.parameterTypes[1] == Integer::class.java)
+                    it.parameterTypes[0] == String::class.java
         }?.let { m ->
             val tag = "getPrimaryClip(String,Int)"
             tryInvoke(tag, m, proxy, pkgName, userId)?.let { return it to tag }
         }
-        
-        // (AttributionSource, Int) - 作为备用
+
+        // (AttributionSource, Int)
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) && it.parameterCount == 2 &&
-            it.parameterTypes[0].name == "android.content.AttributionSource"
+                    it.parameterTypes[0].name == "android.content.AttributionSource"
         }?.let { m ->
             val src = buildAttributionSource(ctx)
             val tag = "getPrimaryClip(AttributionSource,Int)"
             tryInvoke(tag, m, proxy, src, userId)?.let { return it to tag }
         }
 
-        // 无参数 - 作为最终备用
+        // ()
         clazz.methods.firstOrNull {
             it.name.equals("getPrimaryClip", true) && it.parameterCount == 0
         }?.let { m ->
@@ -87,14 +103,17 @@ class ClipboardUserService : Service() {
             tryInvoke(tag, m, proxy)?.let { return it to tag }
         }
 
+        LogUtils.e(TAG, "No suitable getPrimaryClip signature found")
         return null to "none"
     }
 
     private fun tryInvoke(tag: String, m: Method, target: Any, vararg args: Any?): ClipData? {
         return try {
-            m.invoke(target, *args) as? ClipData
+            (m.invoke(target, *args) as? ClipData).also {
+                LogUtils.d(TAG, "Invoke $tag success: items=${it?.itemCount ?: 0}")
+            }
         } catch (t: Throwable) {
-            Log.e(TAG, "Invoke $tag failed", t)
+            LogUtils.e(TAG, "Invoke $tag failed", t)
             null
         }
     }
@@ -116,7 +135,7 @@ class ClipboardUserService : Service() {
 
     private fun buildAttributionSource(ctx: Context): Any? {
         return try {
-            val uid = android.os.Process.myUid() // 在这里是 shell 的 UID
+            val uid = android.os.Process.myUid()
             val cls = Class.forName("android.content.AttributionSource")
             cls.constructors.firstOrNull { c ->
                 val p = c.parameterTypes
@@ -127,7 +146,10 @@ class ClipboardUserService : Service() {
                 val build = bCls.getMethod("build")
                 build.invoke(b)
             }
-        } catch (_: Throwable) { null }
+        } catch (t: Throwable) {
+            LogUtils.e(TAG, "buildAttributionSource() failed", t)
+            null
+        }
     }
 
     private fun myUserId(): Int? {

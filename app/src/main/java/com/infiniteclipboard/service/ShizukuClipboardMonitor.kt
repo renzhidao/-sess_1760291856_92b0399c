@@ -39,14 +39,14 @@ object ShizukuClipboardMonitor {
             running = true
             retryAttempt.set(0)
             cancelBindTimeout()
-            LogUtils.d(TAG, "CONNECTED: Shizuku UserService 已连接")
+            LogUtils.d(TAG, "CONNECTED: Shizuku UserService 已连接 component=${name?.flattenToShortString()}")
             startPolling()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             running = false
             userService = null
-            LogUtils.d(TAG, "DISCONNECTED: Shizuku UserService 已断开")
+            LogUtils.d(TAG, "DISCONNECTED: Shizuku UserService 已断开 component=${name?.flattenToShortString()}")
             scheduleReconnect("SERVICE_DISCONNECTED")
         }
     }
@@ -92,6 +92,8 @@ object ShizukuClipboardMonitor {
         val avail = isAvailable()
         val perm = hasPermission()
         LogUtils.d(TAG, "START: avail=$avail perm=$perm running=$running binding=$binding")
+        logUserServiceInfo(context) // 新增：运行时打印目标 Service 的导出状态/进程/权限
+
         if (!avail || !perm || running || binding) return
 
         if (!::userServiceArgs.isInitialized) {
@@ -103,10 +105,9 @@ object ShizukuClipboardMonitor {
         }
         try {
             binding = true
-            // 仅使用 bindUserService，移除 startUserService 以兼容当前 Shizuku API 版本
             Shizuku.bindUserService(userServiceArgs, connection)
-            scheduleBindTimeout(context, timeoutMs = 8000L) // 适度拉长，提升冷启动成功率
-            LogUtils.d(TAG, "BIND_START")
+            scheduleBindTimeout(context, timeoutMs = 8000L)
+            LogUtils.d(TAG, "BIND_START args={suffix=shizuku, daemon=true, tag=clipboard, version=1}")
         } catch (t: Throwable) {
             binding = false
             LogUtils.e(TAG, "BIND_EXCEPTION", t)
@@ -202,5 +203,24 @@ object ShizukuClipboardMonitor {
         val a = retryAttempt.getAndIncrement()
         val shift = if (a < 4) a else 4
         return (700L shl shift).coerceAtMost(10000L)
+    }
+
+    // 新增：打印 UserService 的清单关键信息（是否导出/进程名/permission）
+    private fun logUserServiceInfo(context: Context) {
+        try {
+            val pm = context.packageManager
+            val cn = ComponentName(context, ClipboardUserService::class.java)
+            val si = try { pm.getServiceInfo(cn, 0) } catch (_: Throwable) { null }
+            if (si == null) {
+                LogUtils.d(TAG, "ServiceInfo: NOT_FOUND for ${cn.flattenToShortString()}")
+                return
+            }
+            val exported = si.exported
+            val proc = si.processName ?: "null"
+            val perm = si.permission ?: "null"
+            LogUtils.d(TAG, "ServiceInfo: exported=$exported process=$proc permission=$perm")
+        } catch (t: Throwable) {
+            LogUtils.e(TAG, "SERVICE_INFO_FAIL", t)
+        }
     }
 }
