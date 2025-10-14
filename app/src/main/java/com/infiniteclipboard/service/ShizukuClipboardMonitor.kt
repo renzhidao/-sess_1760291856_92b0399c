@@ -12,18 +12,17 @@ import java.io.InputStreamReader
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * 后台“无感知”剪贴板读取（最终兜底方案）：
- * - 不再依赖 bindUserService（跨应用绑定在部分 ROM 会被限制导致超时）
- * - 不在应用进程做 IClipboard 反射（会命中 checkPackage 校验）
- * - 直接用 Shizuku 以 shell 身份执行系统命令：
- *      1) /system/bin/cmd clipboard get           (Android 10+ 常见)
- *      2) 失败时尝试 toybox 兼容路径               (部分 ROM PATH 差异)
- *      3) 解析输出中的文本项（支持多 item→合并换行）
+ * 后台“无感知”剪贴板读取（最终兜底方案），移除对 Shizuku.newProcess 的直接调用（该 API 在当前依赖版本是 private），
+ * 改为通过反射调用以保持在 shell UID 下执行命令的能力，从而修复编译错误。
  *
- * 行为：
- * - start(context) 后每 500ms 轮询一次
- * - onPrimaryClipChanged() 触发 6 次短 burst（120ms 间隔），覆盖“回调先到、内容后到”的窗口
- * - 无 UI、无前台打扰、不可见，不影响用户操作
+ * 核心点：
+ * - 不依赖 bindUserService（部分 ROM 跨应用绑定受限）
+ * - 不在应用进程反射 IClipboard（避免 checkPackage 拦截）
+ * - 以 shell 身份执行系统命令：
+ *      1) /system/bin/cmd clipboard get（Android 10+ 常见）
+ *      2) 回退到 PATH 的 cmd clipboard get
+ * - 解析命令输出，合并多 item
+ * - 无 UI、无打扰
  */
 object ShizukuClipboardMonitor {
 
@@ -46,7 +45,6 @@ object ShizukuClipboardMonitor {
         Shizuku.addBinderDeadListener {
             LogUtils.d(TAG, "BINDER_DEAD")
             stop()
-            // Binder 恢复后会在 init 的监听里再次 start
         }
         Shizuku.addRequestPermissionResultListener { _, result ->
             val granted = result == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -74,7 +72,6 @@ object ShizukuClipboardMonitor {
                 }
             })
         }
-        // 简单给个延时回调
         CoroutineScope(Dispatchers.Main).launch {
             delay(1000)
             onResult(hasPermission())
@@ -135,12 +132,11 @@ object ShizukuClipboardMonitor {
         return false
     }
 
-    // ============== Shell 命令实现（通过 Shizuku 以 shell UID 执行） ==============
+    // ============== Shell 命令实现（通过 Shizuku 以 shell UID 执行；用反射调用 newProcess 以避免编译错误） ==============
 
     private fun readClipboardViaShellCmd(timeoutMs: Long = 1500): String? {
         if (!isAvailable() || !hasPermission()) return null
 
-        // 优先 /system/bin/cmd 路径；再退回 PATH 的 cmd
         val candidates = listOf(
             arrayOf("/system/bin/cmd", "clipboard", "get"),
             arrayOf("cmd", "clipboard", "get")
@@ -156,28 +152,18 @@ object ShizukuClipboardMonitor {
         return null
     }
 
-    // 通过 Shizuku 启动 shell 子进程并读取 stdout（带超时）
     private fun execShell(argv: Array<String>, timeoutMs: Long): String? {
         return try {
-            val proc = Shizuku.newProcess(argv, null, null)
-            // 为兼容 API 24，不用 waitFor(timeout)。用“available+超时”策略读取。
+            val proc = newProcessCompat(argv) ?: return null
             val out = StringBuilder()
             val reader = BufferedReader(InputStreamReader(proc.inputStream))
             val errReader = BufferedReader(InputStreamReader(proc.errorStream))
             val start = SystemClock.elapsedRealtime()
 
             while (SystemClock.elapsedRealtime() - start < timeoutMs) {
-                // 读取标准输出
-                while (reader.ready()) {
-                    out.appendLine(reader.readLine())
-                }
-                // 读取错误输出（避免缓冲阻塞）
-                while (errReader.ready()) {
-                    errReader.readLine() // 丢弃错误输出内容
-                }
-                // 简单认为进程已结束且没有更多输出
+                while (reader.ready()) out.appendLine(reader.readLine())
+                while (errReader.ready()) errReader.readLine() // 丢弃错误输出，避免阻塞
                 if (!reader.ready() && !errReader.ready()) {
-                    // 再检查 50ms，确保尾部输出 flush 完成
                     Thread.sleep(50)
                     if (!reader.ready() && !errReader.ready()) break
                 }
@@ -191,38 +177,77 @@ object ShizukuClipboardMonitor {
         }
     }
 
-    // 解析 “cmd clipboard get” 的输出，尽可能提取文本内容（支持多 item）
+    // 通过反射调用 Shizuku.newProcess，适配当前依赖版本中该 API 为 private 的情况
+    private fun newProcessCompat(argv: Array<String>): Process? {
+        return try {
+            val clazz = Class.forName("rikka.shizuku.Shizuku")
+
+            // 优先尝试 (String[], String[], String)
+            runCatching {
+                val m = clazz.getDeclaredMethod(
+                    "newProcess",
+                    Array<String>::class.java,
+                    Array<String>::class.java,
+                    String::class.java
+                )
+                m.isAccessible = true
+                (m.invoke(null, argv, null, null) as? Process)
+            }.getOrNull()
+                ?: runCatching {
+                    // 兼容 (String[], String[], File)
+                    val m = clazz.getDeclaredMethod(
+                        "newProcess",
+                        Array<String>::class.java,
+                        Array<String>::class.java,
+                        java.io.File::class.java
+                    )
+                    m.isAccessible = true
+                    (m.invoke(null, argv, null, null) as? Process)
+                }.getOrNull()
+                ?: runCatching {
+                    // 退回 (String[])
+                    val m = clazz.getDeclaredMethod("newProcess", Array<String>::class.java)
+                    m.isAccessible = true
+                    (m.invoke(null, argv) as? Process)
+                }.getOrNull()
+        } catch (t: Throwable) {
+            LogUtils.e(TAG, "newProcessCompat failure", t)
+            null
+        }
+    }
+
+    // 解析 “cmd clipboard get” 输出
     private fun parseCmdClipboardOutput(raw: String?): String? {
         if (raw.isNullOrEmpty()) return null
         val txt = raw.trim()
         if (txt.isEmpty()) return null
-        // 常见空/无的提示
         if (txt.contains("No primary clip", true)) return null
         if (txt.contains("Primary clip is empty", true)) return null
         if (txt.startsWith("usage:", true)) return null
         if (txt.startsWith("Error:", true)) return null
 
-        // 常见格式：ClipData { text="..." } / Item { text="..." } / Text: '...'
         val items = mutableListOf<String>()
 
-        // 1) 匹配 Text: '...'
+        // Text: '...'
         Regex("""(?i)Text:\s*'(.+?)'""")
             .findAll(txt)
             .forEach { m -> items.add(m.groupValues.getOrNull(1)?.trim().orEmpty()) }
 
-        // 2) 匹配 text="..."/text='...'
+        // text="..."/text='...'
         Regex("""(?i)text\s*=\s*(['"])(.*?)\1""")
             .findAll(txt)
             .forEach { m -> items.add(m.groupValues.getOrNull(2)?.trim().orEmpty()) }
 
-        // 3) 若包含 ClipData 但未命中以上，尽力截取 text= 后到下一个逗号/花括号
-        if (items.isEmpty() && txt.contains("ClipData")) {
+        // ClipData {... text=...}
+        if (items.isEmpty() && txt.contains("ClipData", true)) {
             Regex("""(?i)text\s*=\s*([^,}]+)""")
                 .findAll(txt)
-                .forEach { m -> items.add(m.groupValues.getOrNull(1)?.trim()?.trim('"', '\'').orEmpty()) }
+                .forEach { m ->
+                    items.add(m.groupValues.getOrNull(1)?.trim()?.trim('"', '\'').orEmpty())
+                }
         }
 
-        // 4) 都没命中，直接用整段输出（有些 ROM 直接输出纯文本）
+        // 纯文本输出（部分 ROM）
         if (items.isEmpty() && !txt.contains("ClipData", true)) {
             val cleaned = txt.lines()
                 .map { it.trim() }
@@ -232,7 +257,6 @@ object ShizukuClipboardMonitor {
             if (cleaned.isNotEmpty()) items.add(cleaned)
         }
 
-        // 汇总清洗
         val merged = items
             .map { it.replace("\r", "").trim() }
             .filter { it.isNotEmpty() }
