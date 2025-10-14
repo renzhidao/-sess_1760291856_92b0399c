@@ -102,17 +102,10 @@ object ShizukuClipboardMonitor {
                 .version(1)
         }
         try {
-            // 显式预启动 UserService，避免部分环境 bind 超时
-            try {
-                Shizuku.startUserService(userServiceArgs)
-                LogUtils.d(TAG, "START_USER_SERVICE invoked")
-            } catch (t: Throwable) {
-                LogUtils.e(TAG, "START_USER_SERVICE failed (ignored if already running)", t)
-            }
-
             binding = true
+            // 仅使用 bindUserService，移除 startUserService 以兼容当前 Shizuku API 版本
             Shizuku.bindUserService(userServiceArgs, connection)
-            scheduleBindTimeout(context, timeoutMs = 8000L)
+            scheduleBindTimeout(context, timeoutMs = 8000L) // 适度拉长，提升冷启动成功率
             LogUtils.d(TAG, "BIND_START")
         } catch (t: Throwable) {
             binding = false
@@ -139,7 +132,7 @@ object ShizukuClipboardMonitor {
         if (!running) return
         scope.launch {
             repeat(6) {
-                if (tryReadOnce()) return@launch // 读到就收工
+                if (tryReadOnce()) return@launch
                 delay(120)
             }
         }
@@ -159,7 +152,7 @@ object ShizukuClipboardMonitor {
         val svc = userService ?: return false
         var success = false
         try {
-            val text = svc.getClipboardText() // 调用远程服务在 :shizuku 进程里读
+            val text = svc.getClipboardText()
             if (!text.isNullOrEmpty()) {
                 success = true
                 val h = text.hashCode().toLong()

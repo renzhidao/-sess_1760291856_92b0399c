@@ -81,7 +81,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- 关键：不要加 android:permission，部分环境会直接拦截绑定 -->
+        <!-- 不要加 android:permission，避免拦截绑定 -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
