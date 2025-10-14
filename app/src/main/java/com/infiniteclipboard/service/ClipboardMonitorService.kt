@@ -48,6 +48,9 @@ class ClipboardMonitorService : Service() {
     private var overlayView: View? = null
     private var overlayJob: Job? = null
 
+    // 防抖：避免短时间重复拉起前台读取
+    private var lastTapRecordStartAt: Long = 0L
+
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         if (!isPaused) handleClipboardChange()
     }
@@ -105,18 +108,31 @@ class ClipboardMonitorService : Service() {
                 LogUtils.d("ClipboardService", "内部写入，跳过采集")
                 return
             }
+
+            // 关键修复：仅当 Shizuku“真的已运行”时才交给它，否则走前台兜底
             val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
-            if (!enableShizuku) {
+            val shizukuActive = enableShizuku && ShizukuClipboardMonitor.isRunning()
+
+            if (!shizukuActive) {
+                // 防抖：300ms 内不重复拉起
+                val now = System.currentTimeMillis()
+                if (now - lastTapRecordStartAt < 300L) return
+                lastTapRecordStartAt = now
+
                 val it = Intent(this, TapRecordActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 }
                 startActivity(it)
+                LogUtils.d("ClipboardService", "Shizuku未运行或未启用，拉起前台读取Activity")
+            } else {
+                LogUtils.d("ClipboardService", "Shizuku已运行，由后台服务读取")
             }
         } catch (e: Exception) {
             LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
         }
     }
 
+    // 测试要求的方法保留
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -305,17 +321,17 @@ class ClipboardMonitorService : Service() {
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.TRANSPARENT) // 完全透明
+            setBackgroundColor(Color.TRANSPARENT)
             val pad = dp(4f)
             setPadding(pad, pad, pad, pad)
 
             fun makeBtn(label: String): TextView {
                 return TextView(context).apply {
                     text = label
-                    setTextColor(Color.parseColor("#001F3F")) // 深蓝色（接近黑的蓝）
+                    setTextColor(Color.parseColor("#001F3F"))
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
                     setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
-                    setBackgroundColor(Color.TRANSPARENT) // 按钮背景也透明
+                    setBackgroundColor(Color.TRANSPARENT)
                     isClickable = true
                     isFocusable = false
                     val params = LinearLayout.LayoutParams(
@@ -332,7 +348,6 @@ class ClipboardMonitorService : Service() {
 
             addView(btnCut); addView(btnCopy); addView(btnPaste)
 
-            // 拖动 + 四周吸附
             setOnTouchListener(object : View.OnTouchListener {
                 var downX = 0f
                 var downY = 0f
@@ -359,13 +374,11 @@ class ClipboardMonitorService : Service() {
                             true
                         }
                         MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                            // 四周吸附
                             val viewH = v.height
                             val viewW = v.width
                             val centerX = lp.x + viewW / 2
                             val centerY = lp.y + viewH / 2
 
-                            // 判断靠哪边最近
                             val distLeft = centerX
                             val distRight = screenW - centerX
                             val distTop = centerY
