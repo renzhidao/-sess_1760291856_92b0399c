@@ -65,7 +65,7 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- Shizuku 用户服务（运行于独立进程 :shizuku） -->
+        <!-- 关键修复：Shizuku 用户服务必须对外导出，供 Shizuku（另一应用）跨进程启动/绑定 -->
         <service
             android:name=".service.ClipboardUserService"
             android:enabled="true"
@@ -81,7 +81,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- 不要加 android:permission，避免拦截绑定 -->
+        <!-- 保持 provider 可见；不要给它或 UserService 额外加 android:permission -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
