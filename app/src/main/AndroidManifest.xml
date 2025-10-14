@@ -81,13 +81,13 @@
             </intent-filter>
         </receiver>
 
+        <!-- 修正：ShizukuProvider 不要加 android:permission，避免绑定被拦 -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
             android:multiprocess="false"
             android:enabled="true"
-            android:exported="true"
-            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+            android:exported="true" />
 
     </application>
 </manifest>

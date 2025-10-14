@@ -81,6 +81,12 @@ class MainActivity : AppCompatActivity() {
         ClipboardMonitorService.start(this)
     }
 
+    // 新增：进入前台时，强制抓取系统剪贴板并入库（不拉起前台时段由你控制，这里仅在你真的打开主界面时触发）
+    override fun onResume() {
+        super.onResume()
+        ensureForegroundClipboardCapture()
+    }
+
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.menu_main, menu)
         val shizukuEnabled = prefs.getBoolean("shizuku_enabled", false)
@@ -350,6 +356,25 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@MainActivity, getString(R.string.import_failed), Toast.LENGTH_LONG).show()
                 }
+            }
+        }
+    }
+
+    // 进入前台必抓取：短延迟重试并入库（重复内容会被仓库去重）
+    private fun ensureForegroundClipboardCapture() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val text = com.infiniteclipboard.utils.ClipboardUtils.getClipboardTextWithRetries(
+                    this@MainActivity,
+                    attempts = 6,
+                    intervalMs = 150L
+                )
+                LogUtils.clipboard("前台MainActivity", text)
+                if (!text.isNullOrEmpty()) {
+                    repository.insertItem(text) // 内部已按内容去重
+                }
+            } catch (e: Throwable) {
+                LogUtils.e("MainActivity", "前台入库失败", e)
             }
         }
     }

@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// Shizuku 监控：绑定 UserService（防并发绑定）、daemon 常驻、成功后轮询后台读取
+// Shizuku 监控：绑定 UserService（防并发绑定）、daemon 常驻、成功后轮询后台读取 + 绑定超时退避重试
 package com.infiniteclipboard.service
 
 import android.content.ComponentName
@@ -14,6 +14,7 @@ import com.infiniteclipboard.IClipboardUserService
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 import rikka.shizuku.Shizuku
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 object ShizukuClipboardMonitor {
@@ -32,35 +33,45 @@ object ShizukuClipboardMonitor {
 
     private lateinit var userServiceArgs: Shizuku.UserServiceArgs
 
+    // 新增：绑定超时与退避
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var bindTimeoutRunnable: Runnable? = null
+    private val retryAttempt = AtomicInteger(0)
+
     private val connection = object : android.content.ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             userService = IClipboardUserService.Stub.asInterface(service)
             running = true
             binding = false
-            LogUtils.d(TAG, "UserService 已连接")
+            retryAttempt.set(0)
+            cancelBindTimeout()
+            LogUtils.d(TAG, "CONNECTED: UserService 已连接")
             startPolling()
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             running = false
             userService = null
-            LogUtils.d(TAG, "UserService 已断开")
+            LogUtils.d(TAG, "DISCONNECTED: UserService 已断开")
+            // 触发带退避的重连
+            scheduleReconnect(reason = "SERVICE_DISCONNECTED")
         }
     }
 
     fun init(context: Context) {
         LogUtils.d(TAG, "init: binderReady=${safePing()} sdk=${Build.VERSION.SDK_INT}")
         Shizuku.addBinderReceivedListener {
-            LogUtils.d(TAG, "Binder received")
+            LogUtils.d(TAG, "BINDER_RECEIVED")
             if (hasPermission()) start(context)
         }
         Shizuku.addBinderDeadListener {
-            LogUtils.d(TAG, "Binder dead")
+            LogUtils.d(TAG, "BINDER_DEAD")
             stop()
+            scheduleReconnect(context, "BINDER_DEAD")
         }
         Shizuku.addRequestPermissionResultListener { _, grantResult ->
             val granted = grantResult == PackageManager.PERMISSION_GRANTED
-            LogUtils.d(TAG, "permission result: $granted")
-            if (granted) start(context)
+            LogUtils.d(TAG, "PERM_RESULT: $granted")
+            if (granted) start(context) else LogUtils.d(TAG, "PERM_DENIED")
         }
     }
 
@@ -72,29 +83,28 @@ object ShizukuClipboardMonitor {
     fun ensurePermission(context: Context, onResult: (Boolean) -> Unit) {
         if (hasPermission()) { onResult(true); return }
         val post = { Shizuku.requestPermission(REQ_CODE) }
-        if (isAvailable()) {
-            Handler(Looper.getMainLooper()).post { post() }
-        } else {
+        if (isAvailable()) mainHandler.post { post() }
+        else {
             Shizuku.addBinderReceivedListener(object : Shizuku.OnBinderReceivedListener {
                 override fun onBinderReceived() {
                     Shizuku.removeBinderReceivedListener(this)
-                    Handler(Looper.getMainLooper()).post { post() }
+                    mainHandler.post { post() }
                 }
             })
         }
-        Handler(Looper.getMainLooper()).postDelayed({ onResult(hasPermission()) }, 1200L)
+        mainHandler.postDelayed({ onResult(hasPermission()) }, 1200L)
     }
 
     fun start(context: Context) {
         val avail = isAvailable()
         val perm = hasPermission()
-        LogUtils.d(TAG, "start(): available=$avail permission=$perm running=$running binding=$binding")
+        LogUtils.d(TAG, "START: available=$avail permission=$perm running=$running binding=$binding")
         if (!avail || !perm) {
-            LogUtils.d(TAG, "不可用或未授权，start 跳过")
+            LogUtils.d(TAG, "START_SKIP: 不可用或未授权")
             return
         }
         if (running || binding) {
-            LogUtils.d(TAG, "已连接或正在绑定，跳过")
+            LogUtils.d(TAG, "START_SKIP: 已连接或正在绑定")
             return
         }
         if (!::userServiceArgs.isInitialized) {
@@ -108,11 +118,55 @@ object ShizukuClipboardMonitor {
         }
         try {
             binding = true
+            LogUtils.d(TAG, "BIND_START: 触发绑定")
             Shizuku.bindUserService(userServiceArgs, connection)
-            LogUtils.d(TAG, "正在绑定 UserService...")
+            scheduleBindTimeout(context)
         } catch (e: Throwable) {
             binding = false
-            LogUtils.e(TAG, "绑定 UserService 失败", e)
+            LogUtils.e(TAG, "BIND_FAIL: 绑定异常", e)
+            scheduleReconnect(context, "BIND_EXCEPTION")
+        }
+    }
+
+    private fun scheduleBindTimeout(context: Context, timeoutMs: Long = 4000L) {
+        cancelBindTimeout()
+        bindTimeoutRunnable = Runnable {
+            if (userService == null) {
+                binding = false
+                running = false
+                val delay = computeBackoffDelay()
+                LogUtils.d(TAG, "BIND_TIMEOUT: ${timeoutMs}ms 未连接，${delay}ms 后重试")
+                // 防御性：尝试解绑残留（忽略异常）
+                try {
+                    if (::userServiceArgs.isInitialized) {
+                        Shizuku.unbindUserService(userServiceArgs, connection, true)
+                    }
+                } catch (_: Throwable) {}
+                scope.launch { delay(delay); start(context) }
+            }
+        }
+        mainHandler.postDelayed(bindTimeoutRunnable!!, timeoutMs)
+    }
+
+    private fun cancelBindTimeout() {
+        bindTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        bindTimeoutRunnable = null
+    }
+
+    private fun computeBackoffDelay(): Long {
+        val a = retryAttempt.getAndIncrement()
+        val shift = if (a < 3) a else 3 // 0,1,2,3 => x1,x2,x4,x8
+        var d = 700L shl shift // 700, 1400, 2800, 5600
+        if (d > 7000L) d = 7000L
+        return d
+    }
+
+    private fun scheduleReconnect(context: Context? = null, reason: String) {
+        val delay = computeBackoffDelay()
+        LogUtils.d(TAG, "RECONNECT_SCHEDULE: reason=$reason delay=${delay}ms")
+        scope.launch {
+            delay(delay)
+            context?.let { start(it) }
         }
     }
 
@@ -135,14 +189,14 @@ object ShizukuClipboardMonitor {
                             try {
                                 val ctx = ClipboardApplication.instance
                                 val id = ctx.repository.insertItem(text)
-                                LogUtils.d(TAG, "Shizuku入库成功 id=$id")
+                                LogUtils.d(TAG, "POLL_SAVE_OK id=$id")
                             } catch (e: Throwable) {
-                                LogUtils.e(TAG, "Shizuku入库失败", e)
+                                LogUtils.e(TAG, "POLL_SAVE_FAIL", e)
                             }
                         }
                     }
                 } catch (e: Throwable) {
-                    LogUtils.e(TAG, "Shizuku轮询失败", e)
+                    LogUtils.e(TAG, "POLL_ERROR", e)
                     delay(800)
                 }
                 delay(500)
@@ -151,11 +205,12 @@ object ShizukuClipboardMonitor {
     }
 
     fun stop() {
-        LogUtils.d(TAG, "stop()")
+        LogUtils.d(TAG, "STOP")
         pollJob?.cancel()
         pollJob = null
         running = false
         binding = false
+        cancelBindTimeout()
         try {
             userService?.destroy()
             if (::userServiceArgs.isInitialized) {
@@ -163,5 +218,6 @@ object ShizukuClipboardMonitor {
             }
         } catch (_: Throwable) {}
         userService = null
+        // 不重置 retryAttempt，这样后续重连仍然遵循退避；外部会按需重置
     }
 }
