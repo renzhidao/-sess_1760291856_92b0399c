@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class TapRecordActivity : AppCompatActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         overridePendingTransition(0, 0)
         super.onCreate(savedInstanceState)
@@ -35,4 +36,12 @@ class TapRecordActivity : AppCompatActivity() {
                     LogUtils.e("TapRecordActivity", "前台入库失败", e)
                 }
             } else {
-                
+                LogUtils.d("TapRecordActivity", "前台读取失败：内容为空")
+            }
+            withContext(Dispatchers.Main) {
+                finish()
+                overridePendingTransition(0, 0)
+            }
+        }
+    }
+}

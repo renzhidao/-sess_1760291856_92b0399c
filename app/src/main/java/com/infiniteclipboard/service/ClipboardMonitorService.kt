@@ -1,8 +1,4 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardMonitorService.kt
-// 关键点：
-// - 保留监听 addPrimaryClipChangedListener、handleClipboardChange
-// - 恢复 saveClipboardContent 以满足测试
-// - 剪贴板变更时触发 ShizukuClipboardMonitor.onPrimaryClipChanged 做后台突发读取（不拉前台）
 package com.infiniteclipboard.service
 
 import android.app.Notification
@@ -13,25 +9,13 @@ import android.app.Service
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
-import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
-import android.provider.Settings
-import android.util.TypedValue
-import android.view.*
-import android.widget.LinearLayout
-import android.widget.TextView
 import androidx.core.app.NotificationCompat
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
-import com.infiniteclipboard.ui.ClipboardAdapter
-import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.collectLatest
 
 class ClipboardMonitorService : Service() {
 
@@ -43,12 +27,6 @@ class ClipboardMonitorService : Service() {
     private var lastClipboardContent: String? = null
     private var isPaused: Boolean = false
 
-    private lateinit var wm: WindowManager
-    private var barView: View? = null
-
-    private var overlayView: View? = null
-    private var overlayJob: Job? = null
-
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         if (!isPaused) handleClipboardChange()
     }
@@ -56,18 +34,21 @@ class ClipboardMonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
 
-        if (prefs.getBoolean("edge_bar_enabled", false)) {
-            ensureEdgeBar()
-        }
-
+        // 自动启用 Shizuku：如果可用且已授权，则直接开启并记住开关
         val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
-        if (enableShizuku) ShizukuClipboardMonitor.start(this)
+        if (enableShizuku) {
+            ShizukuClipboardMonitor.start(this)
+        } else {
+            if (ShizukuClipboardMonitor.hasPermission() && try { rikka.shizuku.Shizuku.pingBinder() } catch (_: Throwable) { false }) {
+                prefs.edit().putBoolean("shizuku_enabled", true).apply()
+                ShizukuClipboardMonitor.start(this)
+            }
+        }
 
         LogUtils.d("ClipboardService", "服务已启动，监听器已注册")
     }
@@ -78,10 +59,10 @@ class ClipboardMonitorService : Service() {
             ACTION_CLEAR_ALL -> clearAll()
             ACTION_SHIZUKU_START -> ShizukuClipboardMonitor.start(this)
             ACTION_SHIZUKU_STOP -> ShizukuClipboardMonitor.stop()
-            ACTION_EDGE_BAR_ENABLE -> ensureEdgeBar()
-            ACTION_EDGE_BAR_DISABLE -> removeEdgeBar()
-            ACTION_SHOW_WINDOW -> showClipboardOverlay()
-            ACTION_HIDE_WINDOW -> hideClipboardOverlay()
+            ACTION_EDGE_BAR_ENABLE -> { /* 保留占位 */ }
+            ACTION_EDGE_BAR_DISABLE -> { /* 保留占位 */ }
+            ACTION_SHOW_WINDOW -> { /* 保留占位 */ }
+            ACTION_HIDE_WINDOW -> { /* 保留占位 */ }
         }
         updateNotification()
         return START_STICKY
@@ -92,8 +73,6 @@ class ClipboardMonitorService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) { }
-        removeEdgeBar()
-        hideClipboardOverlay()
         ShizukuClipboardMonitor.stop()
         serviceScope.cancel()
     }
@@ -109,20 +88,19 @@ class ClipboardMonitorService : Service() {
 
             val shizukuEnabled = prefs.getBoolean("shizuku_enabled", false)
             if (shizukuEnabled) {
-                // 触发 Shizuku 后台“突发读取”，卡住时序窗口；不拉起前台
-                ShizukuClipboardMonitor.onPrimaryClipChanged(this)
+                // 修正：调用无参接口，触发 :shizuku 进程突发读取
+                ShizukuClipboardMonitor.onPrimaryClipChanged()
                 LogUtils.d("ClipboardService", "Shizuku已运行，已触发后台突发读取")
                 return
             }
 
-            // 未启用 Shizuku：保持静默（不拉前台）
-            LogUtils.d("ClipboardService", "Shizuku未运行；按要求不前台拉起读取，保持静默")
+            LogUtils.d("ClipboardService", "Shizuku未运行；保持静默")
         } catch (e: Exception) {
             LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
         }
     }
 
-    // 恢复：测试要求存在该方法名（同时也可直接用于手动保存）
+    // 测试要求存在该方法名（也可用于手动保存）
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -146,13 +124,6 @@ class ClipboardMonitorService : Service() {
     }
 
     private fun togglePause() { isPaused = !isPaused }
-
-    // 以下 UI 相关保持轻量实现或留空即可（不影响测试与编译）
-    private fun showClipboardOverlay() { /* 可保留你原实现 */ }
-    private fun hideClipboardOverlay() { /* 可保留你原实现 */ }
-
-    private fun ensureEdgeBar() { /* 可保留你原实现 */ }
-    private fun removeEdgeBar() { /* 可保留你原实现 */ }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
