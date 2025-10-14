@@ -1,60 +1,41 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
 package com.infiniteclipboard.service
 
-import android.content.ComponentName
 import android.content.Context
-import android.content.pm.PackageManager
-import android.os.Handler
-import android.os.IBinder
-import android.os.Looper
-import android.content.ClipData
+import android.os.SystemClock
 import com.infiniteclipboard.ClipboardApplication
-import com.infiniteclipboard.IClipboardUserService
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 import rikka.shizuku.Shizuku
-import rikka.shizuku.SystemServiceHelper
-import java.lang.reflect.Method
-import java.util.concurrent.atomic.AtomicInteger
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * 后台“无感知”剪贴板读取（最终兜底方案）：
+ * - 不再依赖 bindUserService（跨应用绑定在部分 ROM 会被限制导致超时）
+ * - 不在应用进程做 IClipboard 反射（会命中 checkPackage 校验）
+ * - 直接用 Shizuku 以 shell 身份执行系统命令：
+ *      1) /system/bin/cmd clipboard get           (Android 10+ 常见)
+ *      2) 失败时尝试 toybox 兼容路径               (部分 ROM PATH 差异)
+ *      3) 解析输出中的文本项（支持多 item→合并换行）
+ *
+ * 行为：
+ * - start(context) 后每 500ms 轮询一次
+ * - onPrimaryClipChanged() 触发 6 次短 burst（120ms 间隔），覆盖“回调先到、内容后到”的窗口
+ * - 无 UI、无前台打扰、不可见，不影响用户操作
+ */
 object ShizukuClipboardMonitor {
 
     private const val TAG = "ShizukuMonitor"
     private const val REQ_CODE = 10086
-    private const val SHELL_PACKAGE = "com.android.shell"
-    private const val BIND_TIMEOUT_MS = 8000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile private var pollJob: Job? = null
     @Volatile private var running = false
-    @Volatile private var binding = false
-    @Volatile private var userService: IClipboardUserService? = null
 
-    private lateinit var userServiceArgs: Shizuku.UserServiceArgs
-    private val retryAttempt = AtomicInteger(0)
     private val lastSavedHash = AtomicLong(Long.MIN_VALUE)
-
-    private val connection = object : android.content.ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            userService = IClipboardUserService.Stub.asInterface(service)
-            binding = false
-            running = true
-            retryAttempt.set(0)
-            cancelBindTimeout()
-            LogUtils.d(TAG, "CONNECTED: Shizuku UserService 已连接 component=${name?.flattenToShortString()}")
-            startPolling()
-        }
-
-        override fun onServiceDisconnected(name: ComponentName?) {
-            running = false
-            userService = null
-            LogUtils.d(TAG, "DISCONNECTED: Shizuku UserService 已断开 component=${name?.flattenToShortString()}")
-            scheduleReconnect("SERVICE_DISCONNECTED")
-        }
-    }
 
     fun init(context: Context) {
         LogUtils.d(TAG, "init: binderReady=${safePing()}")
@@ -65,65 +46,49 @@ object ShizukuClipboardMonitor {
         Shizuku.addBinderDeadListener {
             LogUtils.d(TAG, "BINDER_DEAD")
             stop()
-            scheduleReconnect("BINDER_DEAD", context)
+            // Binder 恢复后会在 init 的监听里再次 start
         }
         Shizuku.addRequestPermissionResultListener { _, result ->
-            val ok = result == PackageManager.PERMISSION_GRANTED
-            LogUtils.d(TAG, "PERM_RESULT=$ok")
-            if (ok) start(context)
+            val granted = result == android.content.pm.PackageManager.PERMISSION_GRANTED
+            LogUtils.d(TAG, "PERM_RESULT=$granted")
+            if (granted) start(context)
         }
     }
 
     private fun safePing(): Boolean = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
     private fun isAvailable(): Boolean = safePing()
-    fun hasPermission(): Boolean = try { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (_: Throwable) { false }
-    fun isRunning(): Boolean = running
+    fun hasPermission(): Boolean = try {
+        Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
+    } catch (_: Throwable) { false }
 
     fun ensurePermission(context: Context, onResult: (Boolean) -> Unit) {
         if (hasPermission()) { onResult(true); return }
         val req = { Shizuku.requestPermission(REQ_CODE) }
-        if (isAvailable()) mainHandler.post { req() } else {
+        if (isAvailable()) {
+            req()
+        } else {
             Shizuku.addBinderReceivedListener(object : Shizuku.OnBinderReceivedListener {
                 override fun onBinderReceived() {
                     Shizuku.removeBinderReceivedListener(this)
-                    mainHandler.post { req() }
+                    req()
                 }
             })
         }
-        mainHandler.postDelayed({ onResult(hasPermission()) }, 1000)
+        // 简单给个延时回调
+        CoroutineScope(Dispatchers.Main).launch {
+            delay(1000)
+            onResult(hasPermission())
+        }
     }
 
     fun start(context: Context) {
         val avail = isAvailable()
         val perm = hasPermission()
-        LogUtils.d(TAG, "START: avail=$avail perm=$perm running=$running binding=$binding")
-        logUserServiceInfo(context)
-
+        LogUtils.d(TAG, "START: avail=$avail perm=$perm running=$running")
         if (!avail || !perm) return
-        if (!::userServiceArgs.isInitialized) {
-            userServiceArgs = Shizuku.UserServiceArgs(ComponentName(context, ClipboardUserService::class.java))
-                .processNameSuffix("shizuku")
-                .daemon(true)
-                .tag("clipboard")
-                .version(1)
-        }
-        if (!running && !binding) {
-            try {
-                binding = true
-                Shizuku.bindUserService(userServiceArgs, connection)
-                scheduleBindTimeout(context, timeoutMs = BIND_TIMEOUT_MS)
-                LogUtils.d(TAG, "BIND_START args={suffix=shizuku, daemon=true, tag=clipboard, version=1}")
-            } catch (t: Throwable) {
-                binding = false
-                LogUtils.e(TAG, "BIND_EXCEPTION", t)
-                scheduleReconnect("BIND_EXCEPTION", context)
-            }
-        }
-        // 无论绑定是否成功，立刻启动轮询（包含直连兜底），避免等待绑定期间错失采集窗口
-        if (!running) {
-            running = true // 标记为运行中以启动轮询
-            startPolling()
-        }
+        if (running) return
+        running = true
+        startPolling()
     }
 
     fun stop() {
@@ -131,15 +96,9 @@ object ShizukuClipboardMonitor {
         pollJob?.cancel()
         pollJob = null
         running = false
-        binding = false
-        cancelBindTimeout()
-        try {
-            userService?.destroy()
-            if (::userServiceArgs.isInitialized) Shizuku.unbindUserService(userServiceArgs, connection, true)
-        } catch (_: Throwable) {}
-        userService = null
     }
 
+    // 剪贴板广播回调时触发一小段突发读取，抢时间窗口
     fun onPrimaryClipChanged() {
         if (!running) return
         scope.launch {
@@ -161,33 +120,14 @@ object ShizukuClipboardMonitor {
     }
 
     private suspend fun tryReadOnce(): Boolean {
-        // 优先走用户服务；失败则走直连兜底（FALLBACK_DIRECT）
-        val svc = userService
-        if (svc != null) {
-            try {
-                val text = svc.getClipboardText()
-                return handleTextIfAny(text, source = "Shizuku后台")
-            } catch (t: Throwable) {
-                LogUtils.e(TAG, "READ_FAIL_VIA_USERSERVICE", t)
-            }
-        }
-        // 直连兜底：不依赖绑定，不再被 BIND_TIMEOUT 卡住
-        return try {
-            val text = readClipboardDirect()
-            handleTextIfAny(text, source = "FALLBACK_DIRECT")
-        } catch (t: Throwable) {
-            LogUtils.e(TAG, "READ_FAIL_DIRECT", t)
-            false
-        }
-    }
-
-    private suspend fun handleTextIfAny(text: String?, source: String): Boolean {
+        // 仅使用“命令兜底”（shell 身份），不再做应用进程反射
+        val text = readClipboardViaShellCmd()
         if (!text.isNullOrEmpty()) {
             val h = text.hashCode().toLong()
             if (h != lastSavedHash.get()) {
                 lastSavedHash.set(h)
                 val id = ClipboardApplication.instance.repository.insertItem(text)
-                LogUtils.clipboard(source, text)
+                LogUtils.clipboard("FALLBACK_CMD", text)
                 LogUtils.d(TAG, "SAVE_OK id=$id")
             }
             return true
@@ -195,159 +135,112 @@ object ShizukuClipboardMonitor {
         return false
     }
 
-    @Volatile private var bindTimeoutRunnable: Runnable? = null
-    private fun scheduleBindTimeout(context: Context, timeoutMs: Long = BIND_TIMEOUT_MS) {
-        cancelBindTimeout()
-        bindTimeoutRunnable = Runnable {
-            if (userService == null && binding) {
-                binding = false
-                LogUtils.d(TAG, "BIND_TIMEOUT after ${timeoutMs}ms")
-                scheduleReconnect("BIND_TIMEOUT", context)
-            }
-        }
-        mainHandler.postDelayed(bindTimeoutRunnable!!, timeoutMs)
-    }
+    // ============== Shell 命令实现（通过 Shizuku 以 shell UID 执行） ==============
 
-    private fun cancelBindTimeout() {
-        bindTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
-        bindTimeoutRunnable = null
-    }
-
-    private fun scheduleReconnect(reason: String, context: Context? = null) {
-        val backoff = computeBackoff()
-        LogUtils.d(TAG, "RECONNECT reason=$reason in ${backoff}ms")
-        scope.launch {
-            delay(backoff)
-            withContext(Dispatchers.Main) {
-                context?.let { start(it) }
-            }
-        }
-    }
-
-    private fun computeBackoff(): Long {
-        val a = retryAttempt.getAndIncrement()
-        val shift = if (a < 4) a else 4
-        return (700L shl shift).coerceAtMost(10000L)
-    }
-
-    // ===== 运行时观测：打印 UserService 清单信息 =====
-    private fun logUserServiceInfo(context: Context) {
-        try {
-            val pm = context.packageManager
-            val cn = ComponentName(context, ClipboardUserService::class.java)
-            val si = try { pm.getServiceInfo(cn, 0) } catch (_: Throwable) { null }
-            if (si == null) {
-                LogUtils.d(TAG, "ServiceInfo: NOT_FOUND for ${cn.flattenToShortString()}")
-                return
-            }
-            val exported = si.exported
-            val proc = si.processName ?: "null"
-            val perm = si.permission ?: "null"
-            LogUtils.d(TAG, "ServiceInfo: exported=$exported process=$proc permission=$perm")
-        } catch (t: Throwable) {
-            LogUtils.e(TAG, "SERVICE_INFO_FAIL", t)
-        }
-    }
-
-    // ===== 直连兜底：使用 Shizuku 的 SystemServiceHelper 直接反射 IClipboard =====
-    private fun readClipboardDirect(): String? {
+    private fun readClipboardViaShellCmd(timeoutMs: Long = 1500): String? {
         if (!isAvailable() || !hasPermission()) return null
-        val proxy = obtainIClipboard() ?: return null
-        val (clip, shape) = getPrimaryClipAllShapes(proxy)
-        LogUtils.d(TAG, "FALLBACK_DIRECT: getPrimaryClip via $shape, items=${clip?.itemCount ?: 0}")
-        return clipDataToText(ClipboardApplication.instance, clip)
+
+        // 优先 /system/bin/cmd 路径；再退回 PATH 的 cmd
+        val candidates = listOf(
+            arrayOf("/system/bin/cmd", "clipboard", "get"),
+            arrayOf("cmd", "clipboard", "get")
+        )
+
+        for (argv in candidates) {
+            val out = execShell(argv, timeoutMs)
+            val parsed = parseCmdClipboardOutput(out)
+            if (!parsed.isNullOrEmpty()) return parsed
+            if (out != null && out.contains("No primary clip", true)) return null
+            if (out != null && out.contains("empty", true) && out.contains("clip", true)) return null
+        }
+        return null
     }
 
-    private fun obtainIClipboard(): Any? {
+    // 通过 Shizuku 启动 shell 子进程并读取 stdout（带超时）
+    private fun execShell(argv: Array<String>, timeoutMs: Long): String? {
         return try {
-            val raw = SystemServiceHelper.getSystemService("clipboard") as? IBinder ?: return null
-            val stub = Class.forName("android.content.IClipboard\$Stub")
-            val asInterface = stub.getMethod("asInterface", IBinder::class.java)
-            asInterface.invoke(null, raw)
-        } catch (_: Throwable) { null }
-    }
+            val proc = Shizuku.newProcess(argv, null, null)
+            // 为兼容 API 24，不用 waitFor(timeout)。用“available+超时”策略读取。
+            val out = StringBuilder()
+            val reader = BufferedReader(InputStreamReader(proc.inputStream))
+            val errReader = BufferedReader(InputStreamReader(proc.errorStream))
+            val start = SystemClock.elapsedRealtime()
 
-    private fun getPrimaryClipAllShapes(proxy: Any): Pair<ClipData?, String> {
-        val clazz = proxy.javaClass
-        val userId = myUserId() ?: 0
-
-        // 优先 (String, Int) 形态：传入 shell 包名，匹配调用身份
-        clazz.methods.firstOrNull {
-            it.name.equals("getPrimaryClip", true) && it.parameterCount == 2 &&
-            it.parameterTypes[0] == String::class.java
-        }?.let { m ->
-            val tag = "getPrimaryClip(String,Int)"
-            tryInvoke(tag, m, proxy, SHELL_PACKAGE, userId)?.let { return it to tag }
-        }
-
-        // 其次 (AttributionSource, Int)：构造 uid=2000(shell) + pkg=com.android.shell
-        clazz.methods.firstOrNull {
-            it.name.equals("getPrimaryClip", true) && it.parameterCount == 2 &&
-            it.parameterTypes[0].name == "android.content.AttributionSource"
-        }?.let { m ->
-            val src = buildShellAttributionSource()
-            val tag = "getPrimaryClip(AttributionSource,Int)"
-            tryInvoke(tag, m, proxy, src, userId)?.let { return it to tag }
-        }
-
-        // 最后 () 无参
-        clazz.methods.firstOrNull {
-            it.name.equals("getPrimaryClip", true) && it.parameterCount == 0
-        }?.let { m ->
-            val tag = "getPrimaryClip()"
-            tryInvoke(tag, m, proxy)?.let { return it to tag }
-        }
-
-        return null to "none"
-    }
-
-    private fun tryInvoke(tag: String, m: Method, target: Any, vararg args: Any?): ClipData? {
-        return try {
-            m.invoke(target, *args) as? ClipData
+            while (SystemClock.elapsedRealtime() - start < timeoutMs) {
+                // 读取标准输出
+                while (reader.ready()) {
+                    out.appendLine(reader.readLine())
+                }
+                // 读取错误输出（避免缓冲阻塞）
+                while (errReader.ready()) {
+                    errReader.readLine() // 丢弃错误输出内容
+                }
+                // 简单认为进程已结束且没有更多输出
+                if (!reader.ready() && !errReader.ready()) {
+                    // 再检查 50ms，确保尾部输出 flush 完成
+                    Thread.sleep(50)
+                    if (!reader.ready() && !errReader.ready()) break
+                }
+                Thread.sleep(20)
+            }
+            try { proc.destroy() } catch (_: Throwable) { }
+            out.toString().trim().ifEmpty { null }
         } catch (t: Throwable) {
-            LogUtils.e(TAG, "Invoke $tag failed", t)
+            LogUtils.e(TAG, "execShell failed: ${argv.joinToString(" ")}", t)
             null
         }
     }
 
-    private fun buildShellAttributionSource(): Any? {
-        return try {
-            val cls = Class.forName("android.content.AttributionSource")
-            // 优先尝试 (int uid, String packageName, String attributionTag)
-            cls.constructors.firstOrNull { c ->
-                val p = c.parameterTypes
-                p.size == 3 && p[0] == Int::class.javaPrimitiveType && p[1] == String::class.java
-            }?.newInstance(2000, SHELL_PACKAGE, null) ?: run {
-                // 兼容 Builder 版本
-                val bCls = Class.forName("android.content.AttributionSource\$Builder")
-                val b = bCls.getConstructor(Int::class.javaPrimitiveType, String::class.java)
-                    .newInstance(2000, SHELL_PACKAGE)
-                val build = bCls.getMethod("build")
-                build.invoke(b)
-            }
-        } catch (_: Throwable) { null }
-    }
+    // 解析 “cmd clipboard get” 的输出，尽可能提取文本内容（支持多 item）
+    private fun parseCmdClipboardOutput(raw: String?): String? {
+        if (raw.isNullOrEmpty()) return null
+        val txt = raw.trim()
+        if (txt.isEmpty()) return null
+        // 常见空/无的提示
+        if (txt.contains("No primary clip", true)) return null
+        if (txt.contains("Primary clip is empty", true)) return null
+        if (txt.startsWith("usage:", true)) return null
+        if (txt.startsWith("Error:", true)) return null
 
-    private fun clipDataToText(ctx: Context, clip: ClipData?): String? {
-        if (clip == null || clip.itemCount <= 0) return null
-        val sb = StringBuilder()
-        for (i in 0 until clip.itemCount) {
-            val item = clip.getItemAt(i)
-            val piece = try { item.coerceToText(ctx)?.toString() } catch (_: Throwable) { item.text?.toString() }
-            val clean = piece?.trim()
-            if (!clean.isNullOrEmpty()) {
-                if (sb.isNotEmpty()) sb.append('\n')
-                sb.append(clean)
-            }
+        // 常见格式：ClipData { text="..." } / Item { text="..." } / Text: '...'
+        val items = mutableListOf<String>()
+
+        // 1) 匹配 Text: '...'
+        Regex("""(?i)Text:\s*'(.+?)'""")
+            .findAll(txt)
+            .forEach { m -> items.add(m.groupValues.getOrNull(1)?.trim().orEmpty()) }
+
+        // 2) 匹配 text="..."/text='...'
+        Regex("""(?i)text\s*=\s*(['"])(.*?)\1""")
+            .findAll(txt)
+            .forEach { m -> items.add(m.groupValues.getOrNull(2)?.trim().orEmpty()) }
+
+        // 3) 若包含 ClipData 但未命中以上，尽力截取 text= 后到下一个逗号/花括号
+        if (items.isEmpty() && txt.contains("ClipData")) {
+            Regex("""(?i)text\s*=\s*([^,}]+)""")
+                .findAll(txt)
+                .forEach { m -> items.add(m.groupValues.getOrNull(1)?.trim()?.trim('"', '\'').orEmpty()) }
         }
-        return sb.toString().trim().ifEmpty { null }
+
+        // 4) 都没命中，直接用整段输出（有些 ROM 直接输出纯文本）
+        if (items.isEmpty() && !txt.contains("ClipData", true)) {
+            val cleaned = txt.lines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.startsWith("usage:", true) && !it.startsWith("error", true) }
+                .joinToString("\n")
+                .trim()
+            if (cleaned.isNotEmpty()) items.add(cleaned)
+        }
+
+        // 汇总清洗
+        val merged = items
+            .map { it.replace("\r", "").trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n")
+            .trim()
+
+        return merged.ifEmpty { null }
     }
 
-    private fun myUserId(): Int? {
-        return try {
-            val uh = Class.forName("android.os.UserHandle")
-            val m = uh.getMethod("myUserId")
-            m.invoke(null) as? Int
-        } catch (_: Throwable) { null }
-    }
+    fun isRunning(): Boolean = running
 }
