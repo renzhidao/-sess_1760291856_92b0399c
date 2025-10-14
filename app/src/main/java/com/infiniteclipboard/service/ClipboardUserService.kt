@@ -1,91 +1,143 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardUserService.kt
 package com.infiniteclipboard.service
 
+import android.app.Service
 import android.content.ClipData
+import android.content.Intent
 import android.os.IBinder
-import android.os.Process
 import com.infiniteclipboard.IClipboardUserService
-import java.lang.reflect.Method
 
-class ClipboardUserService : IClipboardUserService.Stub() {
+class ClipboardUserService : Service() {
 
-    override fun getClipboardText(): String? {
-        return try {
-            // 在privileged进程中获取IClipboard Binder
-            val serviceManagerClass = Class.forName("android.os.ServiceManager")
-            val getService = serviceManagerClass.getMethod("getService", String::class.java)
-            val binder = getService.invoke(null, "clipboard") as? IBinder
-                ?: return null
+    private val binder = object : IClipboardUserService.Stub() {
+        override fun getClipboardText(): String? {
+            return try {
+                val iCb = obtainIClipboard() ?: return null
+                val clip = invokeGetPrimaryClip(iCb)
+                clipDataToText(clip)
+            } catch (_: Throwable) {
+                null
+            }
+        }
 
-            val stubClass = Class.forName("android.content.IClipboard\$Stub")
-            val asInterface = stubClass.getMethod("asInterface", IBinder::class.java)
-            val iClipboard = asInterface.invoke(null, binder) ?: return null
-
-            // 获取getPrimaryClip方法（尝试多种签名）
-            val clip = invokePrimaryClip(iClipboard)
-            extractText(clip)
-        } catch (e: Throwable) {
-            android.util.Log.e("ClipboardUserService", "读取失败", e)
-            null
+        override fun destroy() {
+            try { stopSelf() } catch (_: Throwable) {}
         }
     }
 
-    private fun invokePrimaryClip(proxy: Any): ClipData? {
+    override fun onBind(intent: Intent?): IBinder = binder
+
+    private fun obtainIClipboard(): Any? = try {
+        val smCls = Class.forName("android.os.ServiceManager")
+        val getService = smCls.getMethod("getService", String::class.java)
+        val raw = getService.invoke(null, "clipboard") as? IBinder ?: return null
+        val stub = Class.forName("android.content.IClipboard\$Stub")
+        val asInterface = stub.getMethod("asInterface", IBinder::class.java)
+        asInterface.invoke(null, raw)
+    } catch (_: Throwable) { null }
+
+    private fun invokeGetPrimaryClip(proxy: Any): ClipData? {
         val clazz = proxy.javaClass
-        val methods = clazz.methods
-
-        // 尝试 getPrimaryClip(String, String, int)
-        try {
-            val m = clazz.getMethod("getPrimaryClip", String::class.java, String::class.java, Int::class.javaPrimitiveType)
-            return m.invoke(proxy, "com.infiniteclipboard", null, getUserId()) as? ClipData
-        } catch (_: Throwable) {}
-
-        // 尝试 getPrimaryClip(String, int)
-        try {
-            val m = clazz.getMethod("getPrimaryClip", String::class.java, Int::class.javaPrimitiveType)
-            return m.invoke(proxy, "com.infiniteclipboard", getUserId()) as? ClipData
-        } catch (_: Throwable) {}
-
-        // 尝试 getPrimaryClip(String)
-        try {
-            val m = clazz.getMethod("getPrimaryClip", String::class.java)
-            return m.invoke(proxy, "com.infiniteclipboard") as? ClipData
-        } catch (_: Throwable) {}
-
-        // 尝试 getPrimaryClip()
-        try {
-            val m = clazz.getMethod("getPrimaryClip")
-            return m.invoke(proxy) as? ClipData
-        } catch (_: Throwable) {}
-
+        clazz.methods.firstOrNull {
+            it.name.equals("getPrimaryClip", true) &&
+                    it.returnType == ClipData::class.java &&
+                    it.parameterTypes.size == 2 &&
+                    it.parameterTypes[0].name == "android.content.AttributionSource" &&
+                    (it.parameterTypes[1] == Int::class.javaPrimitiveType || it.parameterTypes[1] == Integer::class.java)
+        }?.let { m ->
+            val src = buildAttributionSourceOrNull()
+            val uid = myUserId() ?: 0
+            return try { if (src != null) m.invoke(proxy, src, uid) as? ClipData else null } catch (_: Throwable) { null }
+        }
+        clazz.methods.firstOrNull {
+            it.name.equals("getPrimaryClip", true) &&
+                    it.returnType == ClipData::class.java &&
+                    it.parameterTypes.size == 1 &&
+                    it.parameterTypes[0].name == "android.content.AttributionSource"
+        }?.let { m ->
+            val src = buildAttributionSourceOrNull()
+            return try { if (src != null) m.invoke(proxy, src) as? ClipData else null } catch (_: Throwable) { null }
+        }
+        clazz.methods.firstOrNull {
+            it.name.equals("getPrimaryClip", true) &&
+                    it.returnType == ClipData::class.java &&
+                    it.parameterTypes.size == 3 &&
+                    it.parameterTypes[0] == String::class.java &&
+                    it.parameterTypes[1] == String::class.java &&
+                    (it.parameterTypes[2] == Int::class.javaPrimitiveType || it.parameterTypes[2] == Integer::class.java)
+        }?.let { m ->
+            val uid = myUserId() ?: 0
+            return try { m.invoke(proxy, packageName, null, uid) as? ClipData } catch (_: Throwable) { null }
+        }
+        clazz.methods.firstOrNull {
+            it.name.equals("getPrimaryClip", true) &&
+                    it.returnType == ClipData::class.java &&
+                    it.parameterTypes.size == 2 &&
+                    it.parameterTypes[0] == String::class.java &&
+                    (it.parameterTypes[1] == Int::class.javaPrimitiveType || it.parameterTypes[1] == Integer::class.java)
+        }?.let { m ->
+            val uid = myUserId() ?: 0
+            return try { m.invoke(proxy, packageName, uid) as? ClipData } catch (_: Throwable) { null }
+        }
+        clazz.methods.firstOrNull {
+            it.name.equals("getPrimaryClip", true) &&
+                    it.returnType == ClipData::class.java &&
+                    it.parameterTypes.size == 2 &&
+                    it.parameterTypes[0] == String::class.java &&
+                    it.parameterTypes[1] == String::class.java
+        }?.let { m ->
+            return try { m.invoke(proxy, packageName, null) as? ClipData } catch (_: Throwable) { null }
+        }
+        clazz.methods.firstOrNull {
+            it.name.equals("getPrimaryClip", true) &&
+                    it.returnType == ClipData::class.java &&
+                    it.parameterCount == 1 &&
+                    it.parameterTypes[0] == String::class.java
+        }?.let { m ->
+            return try { m.invoke(proxy, packageName) as? ClipData } catch (_: Throwable) { null }
+        }
+        clazz.methods.firstOrNull {
+            it.name.equals("getPrimaryClip", true) &&
+                    it.returnType == ClipData::class.java &&
+                    it.parameterCount == 0
+        }?.let { m ->
+            return try { m.invoke(proxy) as? ClipData } catch (_: Throwable) { null }
+        }
         return null
     }
 
-    private fun extractText(clip: ClipData?): String? {
-        if (clip == null || clip.itemCount == 0) return null
+    private fun clipDataToText(clip: ClipData?): String? {
+        if (clip == null || clip.itemCount <= 0) return null
         val sb = StringBuilder()
         for (i in 0 until clip.itemCount) {
             val item = clip.getItemAt(i)
-            val text = item?.text?.toString()
-            if (!text.isNullOrBlank()) {
+            val piece = item.coerceToText(this)?.toString()?.trim()
+            if (!piece.isNullOrEmpty()) {
                 if (sb.isNotEmpty()) sb.append('\n')
-                sb.append(text)
+                sb.append(piece)
             }
         }
-        return sb.toString().trim().takeIf { it.isNotEmpty() }
+        return sb.toString().trim().ifEmpty { null }
     }
 
-    private fun getUserId(): Int {
-        return try {
-            val userHandleClass = Class.forName("android.os.UserHandle")
-            val myUserId = userHandleClass.getMethod("myUserId")
-            myUserId.invoke(null) as? Int ?: 0
-        } catch (_: Throwable) {
-            0
+    private fun buildAttributionSourceOrNull(): Any? = try {
+        val uid = android.os.Process.myUid()
+        val tag: String? = null
+        val cls = Class.forName("android.content.AttributionSource")
+        cls.constructors.firstOrNull { c ->
+            val p = c.parameterTypes
+            p.size == 3 && p[0] == Int::class.javaPrimitiveType && p[1] == String::class.java && p[2] == String::class.java
+        }?.newInstance(uid, packageName, tag) ?: run {
+            val bCls = Class.forName("android.content.AttributionSource\$Builder")
+            val b = bCls.getConstructor(Int::class.javaPrimitiveType, String::class.java).newInstance(uid, packageName)
+            val build = bCls.getMethod("build")
+            build.invoke(b)
         }
-    }
+    } catch (_: Throwable) { null }
 
-    override fun destroy() {
-        System.exit(0)
-    }
+    private fun myUserId(): Int? = try {
+        val uh = Class.forName("android.os.UserHandle")
+        val m = uh.getMethod("myUserId")
+        m.invoke(null) as? Int
+    } catch (_: Throwable) { null }
 }

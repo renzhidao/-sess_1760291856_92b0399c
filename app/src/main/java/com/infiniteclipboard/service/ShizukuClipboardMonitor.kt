@@ -3,7 +3,6 @@ package com.infiniteclipboard.service
 
 import android.content.ComponentName
 import android.content.Context
-import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
@@ -14,6 +13,7 @@ import com.infiniteclipboard.IClipboardUserService
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 import rikka.shizuku.Shizuku
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 object ShizukuClipboardMonitor {
@@ -25,23 +25,22 @@ object ShizukuClipboardMonitor {
 
     @Volatile private var pollJob: Job? = null
     @Volatile private var userService: IClipboardUserService? = null
+    @Volatile private var running = false
+
     private val lastTextHash = AtomicLong(0L)
+    private val hiddenReady = AtomicBoolean(false)
 
-    private val userServiceArgs = Shizuku.UserServiceArgs(
-        ComponentName(
-            "com.infiniteclipboard",
-            ClipboardUserService::class.java.name
-        )
-    ).daemon(false).tag("clipboard").version(1)
+    private lateinit var userServiceArgs: Shizuku.UserServiceArgs
 
-    private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            userService = IClipboardUserService.Stub.asInterface(binder)
+    private val connection = object : android.content.ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            userService = IClipboardUserService.Stub.asInterface(service)
+            running = true
             LogUtils.d(TAG, "UserService 已连接")
             startPolling()
         }
-
         override fun onServiceDisconnected(name: ComponentName?) {
+            running = false
             userService = null
             LogUtils.d(TAG, "UserService 已断开")
         }
@@ -68,15 +67,11 @@ object ShizukuClipboardMonitor {
 
     private fun safePing(): Boolean = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
     private fun isAvailable(): Boolean = safePing()
-    fun hasPermission(): Boolean = try { 
-        Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED 
-    } catch (_: Throwable) { false }
+    fun hasPermission(): Boolean = try { Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (_: Throwable) { false }
+    fun isRunning(): Boolean = running
 
     fun ensurePermission(context: Context, onResult: (Boolean) -> Unit) {
-        if (hasPermission()) { 
-            onResult(true)
-            return 
-        }
+        if (hasPermission()) { onResult(true); return }
         val post = { Shizuku.requestPermission(REQ_CODE) }
         if (isAvailable()) {
             Handler(Looper.getMainLooper()).post { post() }
@@ -95,19 +90,21 @@ object ShizukuClipboardMonitor {
         val avail = isAvailable()
         val perm = hasPermission()
         LogUtils.d(TAG, "start(): available=$avail permission=$perm")
-        
         if (!avail || !perm) {
             LogUtils.d(TAG, "不可用或未授权，start 跳过")
             return
         }
-        
-        if (userService != null) {
-            LogUtils.d(TAG, "UserService 已绑定，跳过")
-            return
+        if (!::userServiceArgs.isInitialized) {
+            userServiceArgs = Shizuku.UserServiceArgs(
+                ComponentName(context, ClipboardUserService::class.java)
+            )
+                .processNameSuffix("shizuku")
+                .daemon(false)
+                .tag("clipboard")
+                .version(1)
         }
-
         try {
-            Shizuku.bindUserService(userServiceArgs, serviceConnection)
+            Shizuku.bindUserService(userServiceArgs, connection)
             LogUtils.d(TAG, "正在绑定 UserService...")
         } catch (e: Throwable) {
             LogUtils.e(TAG, "绑定 UserService 失败", e)
@@ -121,14 +118,11 @@ object ShizukuClipboardMonitor {
                 try {
                     val svc = userService
                     if (svc == null) {
-                        LogUtils.d(TAG, "UserService 未就绪，等待重连...")
-                        delay(2000)
+                        delay(500)
                         continue
                     }
-
-                    val text = svc.clipboardText
+                    val text = svc.getClipboardText()
                     LogUtils.clipboard("Shizuku后台", text)
-
                     if (!text.isNullOrEmpty()) {
                         val h = text.hashCode().toLong()
                         if (h != lastTextHash.get()) {
@@ -144,9 +138,8 @@ object ShizukuClipboardMonitor {
                     }
                 } catch (e: Throwable) {
                     LogUtils.e(TAG, "Shizuku轮询失败", e)
-                    delay(1000)
+                    delay(800)
                 }
-
                 delay(500)
             }
         }
@@ -156,12 +149,13 @@ object ShizukuClipboardMonitor {
         LogUtils.d(TAG, "stop()")
         pollJob?.cancel()
         pollJob = null
-        
+        running = false
         try {
             userService?.destroy()
-            Shizuku.unbindUserService(userServiceArgs, serviceConnection, true)
+            if (::userServiceArgs.isInitialized) {
+                Shizuku.unbindUserService(userServiceArgs, connection, true)
+            }
         } catch (_: Throwable) {}
-        
         userService = null
     }
 }

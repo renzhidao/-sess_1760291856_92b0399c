@@ -65,6 +65,13 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
+        <!-- Shizuku 用户服务（运行于独立进程 :shizuku） -->
+        <service
+            android:name=".service.ClipboardUserService"
+            android:enabled="true"
+            android:exported="false"
+            android:process=":shizuku" />
+
         <receiver
             android:name=".boot.BootReceiver"
             android:enabled="true"
