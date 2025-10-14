@@ -1,5 +1,5 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ShizukuClipboardMonitor.kt
-// Shizuku 直连后台监听（稳定版）：以 shell 身份（uid=2000, pkg=com.android.shell）访问 IClipboard，绕过后台读取门槛
+// Shizuku 后台监听（稳定版）：以 shell 身份直连 IClipboard；剪贴板变更触发突发读取（6x120ms）；去重与自写入过滤
 package com.infiniteclipboard.service
 
 import android.content.ClipData
@@ -21,15 +21,24 @@ object ShizukuClipboardMonitor {
     private const val TAG = "ShizukuMonitor"
     private const val REQ_CODE = 10086
 
-    // 关键：以 shell 身份对齐系统校验
+    // 以 shell 身份对齐系统校验（Shizuku ADB 模式）
     private const val SHELL_UID = 2000
     private const val SHELL_PKG = "com.android.shell"
+
+    // 我们 app 自己写入剪贴板时用的标签（用于自写入过滤）
+    private const val INTERNAL_LABEL = "com.infiniteclipboard"
+
+    // 变更触发的突发读取参数
+    private const val BURST_TRIES = 6
+    private const val BURST_INTERVAL_MS = 120L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile private var pollJob: Job? = null
     @Volatile private var running = false
+
+    // 去重与降噪
     private val lastSavedHash = AtomicLong(Long.MIN_VALUE)
     private val lastLoggedHash = AtomicLong(Long.MIN_VALUE)
 
@@ -79,31 +88,32 @@ object ShizukuClipboardMonitor {
         LogUtils.d(TAG, "STOP")
     }
 
+    // 由前台服务在 OnPrimaryClipChanged 回调触发
+    fun onPrimaryClipChanged(context: Context) {
+        if (!hasPermission() || !isAvailable()) return
+        if (!running) start(context)
+        scope.launch {
+            var i = 0
+            while (isActive && i < BURST_TRIES) {
+                try {
+                    val meta = readClipboardViaShizukuWithMeta(context)
+                    handleMeta(meta)
+                    if (!meta.text.isNullOrEmpty()) break
+                } catch (_: Throwable) { }
+                delay(BURST_INTERVAL_MS)
+                i++
+            }
+        }
+    }
+
     private fun startPolling(context: Context) {
         pollJob?.cancel()
         running = true
         pollJob = scope.launch {
-            val app = ClipboardApplication.instance
             while (isActive) {
                 try {
                     val meta = readClipboardViaShizukuWithMeta(context)
-                    val text = meta.text
-                    if (!text.isNullOrEmpty()) {
-                        val h = text.hashCode().toLong()
-                        if (lastLoggedHash.get() != h) {
-                            LogUtils.clipboard("Shizuku后台", text)
-                            lastLoggedHash.set(h)
-                        }
-                        if (lastSavedHash.get() != h) {
-                            try {
-                                val id = app.repository.insertItem(text)
-                                lastSavedHash.set(h)
-                                LogUtils.d(TAG, "SAVE_OK id=$id")
-                            } catch (e: Throwable) {
-                                LogUtils.e(TAG, "SAVE_FAIL", e)
-                            }
-                        }
-                    }
+                    handleMeta(meta)
                 } catch (e: Throwable) {
                     LogUtils.e(TAG, "POLL_ERROR", e)
                 }
@@ -112,9 +122,9 @@ object ShizukuClipboardMonitor {
         }
     }
 
-    // ——— shell 身份直连 IClipboard，返回 label+text —— //
     private data class ClipMeta(val text: String?, val label: String?)
 
+    // —— 核心读取：Shizuku SystemServiceHelper 直连 IClipboard，强制以 shell 身份声明 —— //
     private fun readClipboardViaShizukuWithMeta(ctx: Context): ClipMeta {
         val proxy = obtainIClipboard() ?: return ClipMeta(null, null)
         var clip: ClipData? = invokeGetPrimaryClip(ctx, proxy)
@@ -123,6 +133,27 @@ object ShizukuClipboardMonitor {
         val label = try { clip?.description?.label?.toString() } catch (_: Throwable) { null }
         val text = if (clip != null) clipDataToText(ctx, clip) else null
         return ClipMeta(text, label)
+    }
+
+    private fun handleMeta(meta: ClipMeta) {
+        val text = meta.text ?: return
+        if (text.isEmpty()) return
+        if (meta.label == INTERNAL_LABEL) return // 自家写入过滤
+
+        val h = text.hashCode().toLong()
+        if (lastLoggedHash.get() != h) {
+            LogUtils.clipboard("Shizuku后台", text)
+            lastLoggedHash.set(h)
+        }
+        if (lastSavedHash.get() != h) {
+            try {
+                val id = ClipboardApplication.instance.repository.insertItem(text)
+                lastSavedHash.set(h)
+                LogUtils.d(TAG, "SAVE_OK id=$id")
+            } catch (e: Throwable) {
+                LogUtils.e(TAG, "SAVE_FAIL", e)
+            }
+        }
     }
 
     private fun obtainIClipboard(): Any? {
@@ -134,7 +165,7 @@ object ShizukuClipboardMonitor {
         } catch (_: Throwable) { null }
     }
 
-    // 兼容多形态 getPrimaryClip（全部按 shell 身份声明）
+    // —— 兼容多形态 getPrimaryClip（全部按 shell 身份声明） —— //
     private fun invokeGetPrimaryClip(ctx: Context, proxy: Any): ClipData? {
         val clazz = proxy.javaClass
 
@@ -220,7 +251,6 @@ object ShizukuClipboardMonitor {
         return null
     }
 
-    // forUser 变体（极少系统）
     private fun invokeGetPrimaryClipForUser(ctx: Context, proxy: Any): ClipData? {
         val clazz = proxy.javaClass
         clazz.methods.firstOrNull {
@@ -245,7 +275,6 @@ object ShizukuClipboardMonitor {
         return null
     }
 
-    // asUser 变体（极少系统）
     private fun invokeGetPrimaryClipAsUser(ctx: Context, proxy: Any): ClipData? {
         val clazz = proxy.javaClass
         clazz.methods.firstOrNull {
