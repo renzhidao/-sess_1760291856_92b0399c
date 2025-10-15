@@ -16,8 +16,6 @@ import androidx.recyclerview.widget.RecyclerView
 import com.infiniteclipboard.R
 import com.infiniteclipboard.data.ClipboardEntity
 import com.infiniteclipboard.databinding.ItemClipboardBinding
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 class ClipboardAdapter(
@@ -51,8 +49,6 @@ class ClipboardAdapter(
         private val binding: ItemClipboardBinding
     ) : RecyclerView.ViewHolder(binding.root) {
 
-        private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-
         fun bind(item: ClipboardEntity, query: String) {
             binding.apply {
                 tvContent.text = item.content
@@ -60,12 +56,9 @@ class ClipboardAdapter(
                     tvContent.text = buildHighlighted(item.content, query, root.context)
                 }
 
-                tvTimestamp.text = dateFormat.format(Date(item.timestamp))
-                tvLength.text = "${item.length} 字符"
-
-                btnCopy.setOnClickListener { onCopyClick(item) }
-                btnShare.setOnClickListener { onShareClick(item) }
-                btnDelete.setOnClickListener { onDeleteClick(item) }
+                ibCopy.setOnClickListener { onCopyClick(item) }
+                ibShare.setOnClickListener { onShareClick(item) }
+                ibDelete.setOnClickListener { onDeleteClick(item) }
                 root.setOnClickListener { onItemClick(item) }
             }
         }
