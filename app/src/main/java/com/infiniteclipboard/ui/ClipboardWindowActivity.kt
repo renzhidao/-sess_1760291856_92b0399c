@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -30,12 +31,12 @@ class ClipboardWindowActivity : AppCompatActivity() {
         binding = ActivityClipboardWindowBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // 缩小小窗宽度，避免撑满屏幕
-        val widthPx = (320 * resources.displayMetrics.density).toInt()
-        window.setLayout(
-            if (widthPx > 0) widthPx else WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT
-        )
+        // 等比例缩小：宽 = 屏幕 80%，高 = 屏幕 80%，顶部对齐，底部自然留 ~20% 空白；左右各 ~10%
+        val dm = resources.displayMetrics
+        val w = (dm.widthPixels * 0.8f).toInt()
+        val h = (dm.heightPixels * 0.8f).toInt()
+        window.setLayout(w, h)
+        window.setGravity(Gravity.TOP or Gravity.CENTER_HORIZONTAL)
 
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
@@ -57,10 +58,7 @@ class ClipboardWindowActivity : AppCompatActivity() {
         binding.recyclerView.apply {
             layoutManager = LinearLayoutManager(this@ClipboardWindowActivity)
             adapter = this@ClipboardWindowActivity.adapter
-            // 与主界面一致的左右内边距，卡片对齐
-            val pad = (16 * resources.displayMetrics.density).toInt()
-            setPadding(pad, pad, pad, pad)
-            clipToPadding = false
+            // 保持原界面：不额外改动内边距/排版
         }
     }
 
