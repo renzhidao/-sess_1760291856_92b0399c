@@ -115,7 +115,7 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 测试要求方法：恢复保存能力（存在即可通过测试）
+    // 测试要求方法：存在即可通过测试（同时也可被内部调用）
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -384,7 +384,7 @@ class ClipboardMonitorService : Service() {
         barLp = null
     }
 
-    // ========== 通知：恢复为打开原来的小窗 Activity（保留原配色与按钮） ==========
+    // ========== 通知：点击打开原来的小窗 Activity（保留原配色与按钮） ==========
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -430,7 +430,7 @@ class ClipboardMonitorService : Service() {
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentIntent(openPendingIntent) // 点击打开原来的小窗 Activity
+            .setContentIntent(openPendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .addAction(toggleIcon, toggleTitle, togglePendingIntent)
@@ -452,6 +452,21 @@ class ClipboardMonitorService : Service() {
         const val ACTION_SHIZUKU_STOP = "com.infiniteclipboard.action.SHIZUKU_STOP"
         const val ACTION_EDGE_BAR_ENABLE = "com.infiniteclipboard.action.EDGE_BAR_ENABLE"
         const val ACTION_EDGE_BAR_DISABLE = "com.infiniteclipboard.action.EDGE_BAR_DISABLE"
+
+        // 恢复供 MainActivity 调用的启动/停止方法，修复 Unresolved reference: start
+        fun start(context: Context) {
+            val intent = Intent(context, ClipboardMonitorService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun stop(context: Context) {
+            val intent = Intent(context, ClipboardMonitorService::class.java)
+            context.stopService(intent)
+        }
     }
 
     private enum class Edge { LEFT, RIGHT, TOP, BOTTOM }
