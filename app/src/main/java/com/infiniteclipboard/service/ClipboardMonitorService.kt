@@ -11,6 +11,8 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
@@ -24,6 +26,7 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.ui.ClipboardWindowActivity
@@ -125,7 +128,7 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 测试要求方法
+    // 测试要求方法（保留）
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -187,13 +190,16 @@ class ClipboardMonitorService : Service() {
             setPadding(pad, pad, pad, pad)
         }
 
+        val accent = ContextCompat.getColor(this, R.color.accent)
+        val pressedBg = makePressableBackground(accent, radiusDp = 6f, strokeDp = 1f)
+
         fun makeTextBtn(label: String, onClick: () -> Unit): TextView {
             return TextView(this).apply {
                 text = label
-                setTextColor(Color.WHITE)
+                setTextColor(accent) // 程序风格的蓝色
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 setPadding(dp(8f), dp(4f), dp(8f), dp(4f))
-                setBackgroundColor(Color.TRANSPARENT)
+                background = pressedBg // 按下出现描边，默认透明
                 isClickable = true
                 isFocusable = false
                 layoutParams = LinearLayout.LayoutParams(
@@ -208,7 +214,7 @@ class ClipboardMonitorService : Service() {
             }
         }
 
-        // 顺序：复制 / 剪切 / 粘贴（文字按钮）
+        // 顺序：复制 / 剪切 / 粘贴 / 记录（文字按钮）
         val btnCopy = makeTextBtn("复制") {
             serviceScope.launch(Dispatchers.IO) {
                 val text = ClipboardAccessibilityService.captureCopy()
@@ -233,12 +239,24 @@ class ClipboardMonitorService : Service() {
                 LogUtils.d("ClipboardService", "边条-粘贴已触发")
             }
         }
+        val btnRecord = makeTextBtn("记录") {
+            serviceScope.launch(Dispatchers.IO) {
+                val text = ClipboardUtils.getClipboardTextWithRetries(
+                    this@ClipboardMonitorService, attempts = 6, intervalMs = 150L
+                )
+                LogUtils.clipboard("边条-记录", text)
+                if (!text.isNullOrEmpty()) {
+                    try { repository.insertItem(text) } catch (_: Throwable) {}
+                }
+            }
+        }
 
         container.addView(btnCopy)
         container.addView(btnCut)
         container.addView(btnPaste)
+        container.addView(btnRecord)
 
-        // 拖动 + 吸附逻辑
+        // 拖动 + 吸附逻辑（支持上下拖动与四周吸附）
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         var downX = 0f
         var downY = 0f
@@ -297,6 +315,33 @@ class ClipboardMonitorService : Service() {
             LogUtils.d("ClipboardService", "边缘小条已显示")
         } catch (t: Throwable) {
             LogUtils.e("ClipboardService", "添加边缘小条失败", t)
+        }
+    }
+
+    private fun makePressableBackground(accent: Int, radiusDp: Float, strokeDp: Float): StateListDrawable {
+        val radiusPx = dp(radiusDp).toFloat()
+        val strokePx = dp(strokeDp)
+
+        fun shape(stroke: Int, alpha: Int): GradientDrawable {
+            return GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.TRANSPARENT)
+                cornerRadius = radiusPx
+                setStroke(strokePx, (accent and 0x00FFFFFF) or (alpha shl 24))
+            }
+        }
+        val normal = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(Color.TRANSPARENT)
+            cornerRadius = radiusPx
+        }
+        val pressed = shape(stroke = strokePx, alpha = 0xCC) // 按下描边更明显
+        val focused = shape(stroke = strokePx, alpha = 0x66) // 获得焦点时稍弱
+
+        return StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), pressed)
+            addState(intArrayOf(android.R.attr.state_focused), focused)
+            addState(intArrayOf(), normal)
         }
     }
 
