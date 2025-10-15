@@ -22,13 +22,16 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.ImageView
+import android.widget.LinearLayout
 import androidx.core.app.NotificationCompat
 import androidx.core.view.ViewCompat
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.ui.TapRecordActivity
+import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
+import kotlin.math.abs
 
 class ClipboardMonitorService : Service() {
 
@@ -40,9 +43,9 @@ class ClipboardMonitorService : Service() {
     private var lastClipboardContent: String? = null
     private var isPaused: Boolean = false
 
-    // 悬浮按钮
+    // 悬浮容器（同时放两个按钮：前台读取 + 静默读取）
     private lateinit var wm: WindowManager
-    private var floatBtn: View? = null
+    private var floatContainer: View? = null
     private var floatParams: WindowManager.LayoutParams? = null
 
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
@@ -57,6 +60,9 @@ class ClipboardMonitorService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
+
+        val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
+        if (enableShizuku) ShizukuClipboardMonitor.start(this)
 
         if (prefs.getBoolean("edge_bar_enabled", false)) ensureEdgeBar()
 
@@ -88,6 +94,7 @@ class ClipboardMonitorService : Service() {
         super.onDestroy()
         try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) { }
         removeEdgeBar()
+        ShizukuClipboardMonitor.stop()
         serviceScope.cancel()
     }
 
@@ -96,9 +103,13 @@ class ClipboardMonitorService : Service() {
             val clip = clipboardManager.primaryClip
             val label = try { clip?.description?.label?.toString() } catch (_: Throwable) { null }
             if (label == "com.infiniteclipboard") return
-            if (prefs.getBoolean("shizuku_enabled", false)) {
+
+            val shizukuEnabled = prefs.getBoolean("shizuku_enabled", false)
+            if (shizukuEnabled) {
                 ShizukuClipboardMonitor.onPrimaryClipChanged()
                 LogUtils.d("ClipboardService", "Shizuku已运行，已触发后台突发读取")
+            } else {
+                LogUtils.d("ClipboardService", "Shizuku未运行；保持静默")
             }
         } catch (e: Exception) {
             LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
@@ -166,7 +177,7 @@ class ClipboardMonitorService : Service() {
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setContentIntent(contentPendingIntent)
+            .setContentIntent(contentPendingIntent) // 测试要求：通知点击事件
             .addAction(toggleIcon, toggleTitle, togglePendingIntent)
             .addAction(R.drawable.ic_clear_all, getString(R.string.notification_action_clear_all), clearPendingIntent)
             .build()
@@ -177,17 +188,17 @@ class ClipboardMonitorService : Service() {
         nm.notify(NOTIFICATION_ID, createNotification())
     }
 
-    // ============ 悬浮按钮：点击拉起透明 TapRecordActivity（修复：不再把主页带到前台） ============
-
+    // ============ 悬浮容器：同时包含“前台读取（恢复旧按钮）”与“静默读取（当前按钮）” ============
     private fun ensureEdgeBar() {
-        if (floatBtn != null) return
+        if (floatContainer != null) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             LogUtils.d("ClipboardService", "缺少悬浮窗权限，无法创建悬浮按钮")
             return
         }
 
-        val sizeDp = 52
-        val sizePx = (resources.displayMetrics.density * sizeDp).toInt()
+        val dp = resources.displayMetrics.density
+        val sizePx = (dp * 48).toInt()
+        val spacing = (dp * 6).toInt()
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -199,43 +210,74 @@ class ClipboardMonitorService : Service() {
                 or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
 
         val params = WindowManager.LayoutParams(
-            sizePx, sizePx, type, flags, PixelFormat.TRANSLUCENT
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            sizePx,
+            type,
+            flags,
+            PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
             x = (resources.displayMetrics.widthPixels * 0.05f).toInt()
             y = 0
         }
 
-        val btn = ImageView(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(0x66000000)
-                setStroke((resources.displayMetrics.density * 1.5f).toInt(), Color.WHITE)
-            }
-            setImageResource(R.drawable.ic_clipboard)
-            setPadding(sizePx / 5, sizePx / 5, sizePx / 5, sizePx / 5)
-            ViewCompat.setElevation(this, 12f)
+        // 圆形背景构造器
+        fun roundBg(color: Int): GradientDrawable = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+            setStroke((dp * 1.5f).toInt(), Color.WHITE)
+        }
 
-            // 修复点：使用“独立临时任务”拉起透明 TapRecordActivity，结束后不会把 MainActivity 带到前台
-            setOnClickListener {
-                try {
-                    val it = Intent(this@ClipboardMonitorService, TapRecordActivity::class.java).apply {
-                        addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_MULTIPLE_TASK or        // 强制临时任务
-                            Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or // 不入最近任务
-                            Intent.FLAG_ACTIVITY_NO_ANIMATION
-                        )
-                    }
-                    startActivity(it)
-                    LogUtils.d("ClipboardService", "悬浮按钮点击，已拉起前台读取（独立任务）")
-                } catch (t: Throwable) {
-                    LogUtils.e("ClipboardService", "拉起前台读取失败", t)
+        // 子按钮工厂
+        fun makeBtn(iconRes: Int, desc: String, onClick: () -> Unit): ImageView {
+            return ImageView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(sizePx, sizePx).apply {
+                    rightMargin = spacing
                 }
+                background = roundBg(0x66000000)
+                setImageResource(iconRes)
+                contentDescription = desc
+                setPadding(sizePx / 5, sizePx / 5, sizePx / 5, sizePx / 5)
+                ViewCompat.setElevation(this, 12f)
+                setOnClickListener { onClick() }
             }
         }
 
-        // 拖拽与点击分离：小位移视为点击，调用 performClick()
+        // 两个功能按钮：
+        // 1) 恢复旧按钮：拉起透明前台 TapRecordActivity（独立任务，不把主页带前台）
+        val btnFront = makeBtn(R.drawable.ic_clipboard, "前台读取") {
+            try {
+                val it = Intent(this, TapRecordActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION
+                    )
+                }
+                startActivity(it)
+                LogUtils.d("ClipboardService", "前台读取按钮：已拉起 TapRecordActivity（独立任务）")
+            } catch (t: Throwable) {
+                LogUtils.e("ClipboardService", "拉起前台读取失败", t)
+            }
+        }
+
+        // 2) 当前按钮：不切屏，服务内静默读取入库
+        val btnSilent = makeBtn(R.drawable.ic_copy, "静默读取") {
+            recordClipboardInService()
+        }
+
+        // 横向容器
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(btnFront)
+            addView(btnSilent.apply {
+                // 去掉最后一个的右边距
+                (layoutParams as LinearLayout.LayoutParams).rightMargin = 0
+            })
+        }
+
+        // 拖拽逻辑（作用于容器，不拦截点击）
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         var downX = 0f
         var downY = 0f
@@ -243,7 +285,7 @@ class ClipboardMonitorService : Service() {
         var startY = 0
         var downTime = 0L
 
-        btn.setOnTouchListener { v, ev ->
+        container.setOnTouchListener { v, ev ->
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = ev.rawX
@@ -251,7 +293,7 @@ class ClipboardMonitorService : Service() {
                     startX = params.x
                     startY = params.y
                     downTime = SystemClock.uptimeMillis()
-                    true
+                    false // 不拦截，子 View 还能收到点击
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (ev.rawX - downX).toInt()
@@ -262,33 +304,51 @@ class ClipboardMonitorService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    val totalDx = kotlin.math.abs(ev.rawX - downX)
-                    val totalDy = kotlin.math.abs(ev.rawY - downY)
+                    val totalDx = abs(ev.rawX - downX)
+                    val totalDy = abs(ev.rawY - downY)
                     val duration = SystemClock.uptimeMillis() - downTime
-                    val isClick = (totalDx <= touchSlop && totalDy <= touchSlop && duration < 300)
-                    if (isClick) v.performClick()
-                    true
+                    // 小位移不拦截，交给子 View 处理点击
+                    (totalDx > touchSlop || totalDy > touchSlop || duration >= 300)
                 }
                 else -> false
             }
         }
 
         try {
-            wm.addView(btn, params)
-            floatBtn = btn
+            wm.addView(container, params)
+            floatContainer = container
             floatParams = params
-            LogUtils.d("ClipboardService", "悬浮按钮已创建")
+            LogUtils.d("ClipboardService", "悬浮容器（前台+静默）已创建")
         } catch (t: Throwable) {
-            LogUtils.e("ClipboardService", "添加悬浮按钮失败", t)
+            LogUtils.e("ClipboardService", "添加悬浮容器失败", t)
+        }
+    }
+
+    private fun recordClipboardInService() {
+        serviceScope.launch(Dispatchers.IO) {
+            val text = ClipboardUtils.getClipboardTextWithRetries(
+                this@ClipboardMonitorService, attempts = 6, intervalMs = 150L
+            )
+            LogUtils.clipboard("悬浮静默", text)
+            if (!text.isNullOrEmpty()) {
+                try {
+                    val id = repository.insertItem(text)
+                    LogUtils.d("ClipboardService", "静默入库成功 id=$id")
+                } catch (e: Throwable) {
+                    LogUtils.e("ClipboardService", "静默入库失败", e)
+                }
+            } else {
+                LogUtils.d("ClipboardService", "静默读取失败：内容为空")
+            }
         }
     }
 
     private fun removeEdgeBar() {
-        val v = floatBtn ?: return
+        val v = floatContainer ?: return
         try { wm.removeView(v) } catch (_: Throwable) { }
-        floatBtn = null
+        floatContainer = null
         floatParams = null
-        LogUtils.d("ClipboardService", "悬浮按钮已移除")
+        LogUtils.d("ClipboardService", "悬浮容器已移除")
     }
 
     companion object {
