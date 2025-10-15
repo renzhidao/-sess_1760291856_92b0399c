@@ -16,7 +16,6 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.os.Build
 import android.os.IBinder
-import android.os.SystemClock
 import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
@@ -119,6 +118,7 @@ class ClipboardMonitorService : Service() {
             }
             val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
             if (!enableShizuku) {
+                // 瞬时前台兜底
                 val it = Intent(this, TapRecordActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 }
@@ -152,7 +152,7 @@ class ClipboardMonitorService : Service() {
 
     private fun togglePause() { isPaused = !isPaused }
 
-    // ========== 边缘小条（蓝色文字按钮、强按压高亮、可拖动、四周吸附） ==========
+    // ========== 边缘小条（蓝色文字按钮、长按拖动、拖动时“更早”触发横排、四周吸附） ==========
 
     private fun dp(v: Float): Int = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics
@@ -192,7 +192,7 @@ class ClipboardMonitorService : Service() {
             setPadding(pad, pad, pad, pad)
         }
 
-        // 蓝色主题色
+        // 蓝色主题色 + 强按压高亮
         val accent = ContextCompat.getColor(this, R.color.accent)
         val pressBg = makePressableBackground(accent, radiusDp = 10f, strokeDp = 2f)
 
@@ -220,7 +220,7 @@ class ClipboardMonitorService : Service() {
             }
         }
 
-        // 三个功能 + 记录：复制 / 剪切 / 粘贴 / 记录（“记录”改为拉起透明Activity，造成前台闪烁后读取）
+        // 三个功能 + 记录：复制 / 剪切 / 粘贴 / 记录
         val btnCopy = makeTextBtn("复制") {
             serviceScope.launch(Dispatchers.IO) {
                 val text = ClipboardAccessibilityService.captureCopy()
@@ -247,7 +247,7 @@ class ClipboardMonitorService : Service() {
         }
         val btnRecord = makeTextBtn("记录") {
             try {
-                // 核心：拉起“完全透明、无动画”的 TapRecordActivity 瞬时前台读取
+                // 点击记录：瞬时拉起透明Activity前台读取（会轻微“闪一下”）
                 val it = Intent(this, TapRecordActivity::class.java).apply {
                     addFlags(
                         Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -267,60 +267,8 @@ class ClipboardMonitorService : Service() {
         container.addView(btnPaste)
         container.addView(btnRecord)
 
-        // 拖动 + 四周吸附
-        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
-        var downX = 0f
-        var downY = 0f
-        var startX = 0
-        var startY = 0
-        var dragging = false
-
-        container.setOnTouchListener { v, e ->
-            val screenW = resources.displayMetrics.widthPixels
-            val screenH = resources.displayMetrics.heightPixels
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = e.rawX
-                    downY = e.rawY
-                    startX = lp.x
-                    startY = lp.y
-                    dragging = false
-                    false // 不拦截，让子控件还能点
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = (e.rawX - downX).toInt()
-                    val dy = (e.rawY - downY).toInt()
-                    if (!dragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) dragging = true
-                    if (dragging) {
-                        lp.x = (startX + dx).coerceIn(0, screenW - v.width)
-                        lp.y = (startY + dy).coerceIn(0, screenH - v.height)
-                        try { wm.updateViewLayout(v, lp) } catch (_: Throwable) {}
-                        true
-                    } else false
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (dragging) {
-                        // 计算与四边距离，吸附到最近边
-                        val distLeft = lp.x
-                        val distRight = screenW - (lp.x + v.width)
-                        val distTop = lp.y
-                        val distBottom = screenH - (lp.y + v.height)
-                        val minDist = min(min(distLeft, distRight), min(distTop, distBottom))
-                        when (minDist) {
-                            distLeft -> { lp.x = 0;   setBarOrientationForEdge(container, edge = Edge.LEFT) }
-                            distRight -> { lp.x = screenW - v.width; setBarOrientationForEdge(container, edge = Edge.RIGHT) }
-                            distTop -> { lp.y = 0;    setBarOrientationForEdge(container, edge = Edge.TOP) }
-                            else -> { lp.y = screenH - v.height; setBarOrientationForEdge(container, edge = Edge.BOTTOM) }
-                        }
-                        try { wm.updateViewLayout(v, lp) } catch (_: Throwable) {}
-                        true
-                    } else {
-                        false // 点击事件交由子控件
-                    }
-                }
-                else -> false
-            }
-        }
+        // 改为“长按任意按钮后拖动”
+        attachLongPressDrag(listOf(container, btnCopy, btnCut, btnPaste, btnRecord), container, lp)
 
         try {
             wm.addView(container, lp)
@@ -332,7 +280,135 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 更高亮的按压背景：按下时有描边+浅色填充；正常透明
+    // 长按触发拖动；拖动中“更早”切换为横向（靠近上下边时预览横排），抬手后吸附四周
+    private fun attachLongPressDrag(views: List<View>, container: LinearLayout, lp: WindowManager.LayoutParams) {
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
+        val longPressTimeout = ViewConfiguration.getLongPressTimeout().coerceAtMost(350)
+        val screenW = resources.displayMetrics.widthPixels
+        val screenH = resources.displayMetrics.heightPixels
+
+        // 让横向预览更早：阈值（距离上下边 <= 72dp 即切横排预览）
+        val edgePreviewMarginTop = dp(72f)
+        val edgePreviewMarginBottom = dp(72f)
+        val sidePreviewMargin = dp(48f)
+
+        var downX = 0f
+        var downY = 0f
+        var startX = 0
+        var startY = 0
+        var dragging = false
+        var longPressArmed = false
+        var pendingLP: Runnable? = null
+
+        fun cancelPendingLP(target: View?) {
+            pendingLP?.let { r -> target?.removeCallbacks(r) }
+            pendingLP = null
+            longPressArmed = false
+        }
+
+        fun beginLongPressDrag(target: View) {
+            dragging = true
+            longPressArmed = false
+            // 不改变点击态；进入拖动后我们消费事件
+        }
+
+        fun updateDuringDrag(target: View) {
+            lp.x = (startX + (target.getTag(R.id.tag_dx) as? Int ?: 0)).coerceIn(0, screenW - container.width)
+            lp.y = (startY + (target.getTag(R.id.tag_dy) as? Int ?: 0)).coerceIn(0, screenH - container.height)
+            try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
+
+            // 拖动中“提前横排预览”
+            val nearTop = lp.y <= edgePreviewMarginTop
+            val nearBottom = (lp.y + container.height) >= (screenH - edgePreviewMarginBottom)
+            val nearLeft = lp.x <= sidePreviewMargin
+            val nearRight = (lp.x + container.width) >= (screenW - sidePreviewMargin)
+
+            when {
+                nearTop -> setBarOrientationForEdge(container, Edge.TOP)
+                nearBottom -> setBarOrientationForEdge(container, Edge.BOTTOM)
+                nearLeft -> setBarOrientationForEdge(container, Edge.LEFT)
+                nearRight -> setBarOrientationForEdge(container, Edge.RIGHT)
+                // 其他区域不强制切换，保持当前方向，避免频繁闪动
+            }
+        }
+
+        fun snapToEdge() {
+            val distLeft = lp.x
+            val distRight = screenW - (lp.x + container.width)
+            val distTop = lp.y
+            val distBottom = screenH - (lp.y + container.height)
+            val minDist = min(min(distLeft, distRight), min(distTop, distBottom))
+            when (minDist) {
+                distLeft -> { lp.x = 0; setBarOrientationForEdge(container, Edge.LEFT) }
+                distRight -> { lp.x = screenW - container.width; setBarOrientationForEdge(container, Edge.RIGHT) }
+                distTop -> { lp.y = 0; setBarOrientationForEdge(container, Edge.TOP) }
+                else -> { lp.y = screenH - container.height; setBarOrientationForEdge(container, Edge.BOTTOM) }
+            }
+            try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
+        }
+
+        views.forEach { v ->
+            v.setOnTouchListener { target, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = e.rawX
+                        downY = e.rawY
+                        startX = lp.x
+                        startY = lp.y
+                        dragging = false
+                        longPressArmed = true
+
+                        // 记录 dx/dy 到 tag（在 MOVE 更新）
+                        target.setTag(R.id.tag_dx, 0)
+                        target.setTag(R.id.tag_dy, 0)
+
+                        // 安排长按进入拖动
+                        val r = Runnable {
+                            if (longPressArmed && !dragging) {
+                                beginLongPressDrag(target)
+                            }
+                        }
+                        pendingLP = r
+                        target.postDelayed(r, longPressTimeout.toLong())
+                        // 不拦截，让点击能继续判断
+                        false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = (e.rawX - downX).toInt()
+                        val dy = (e.rawY - downY).toInt()
+                        target.setTag(R.id.tag_dx, dx)
+                        target.setTag(R.id.tag_dy, dy)
+
+                        if (!dragging) {
+                            // 长按前移动过大则取消长按判定，交给点击/滚动
+                            if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
+                                cancelPendingLP(target)
+                                return@setOnTouchListener false
+                            }
+                            // 还没到长按触发点，不消费
+                            return@setOnTouchListener false
+                        } else {
+                            updateDuringDrag(target)
+                            return@setOnTouchListener true
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        val wasDragging = dragging
+                        cancelPendingLP(target)
+                        dragging = false
+                        if (wasDragging) {
+                            snapToEdge()
+                            true // 我们消费掉拖动这一笔，不触发点击
+                        } else {
+                            false // 让点击正常分发到按钮
+                        }
+                    }
+                    else -> false
+                }
+            }
+        }
+    }
+
     private fun makePressableBackground(accent: Int, radiusDp: Float, strokeDp: Float): StateListDrawable {
         val rPx = dp(radiusDp).toFloat()
         val strokePx = dp(strokeDp)
@@ -342,7 +418,7 @@ class ClipboardMonitorService : Service() {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = rPx
                 setColor((accent and 0x00FFFFFF) or (alphaFill shl 24)) // 半透明填充
-                setStroke(strokePx, (accent and 0x00FFFFFF) or (alphaStroke shl 24)) // 更显眼描边
+                setStroke(strokePx, (accent and 0x00FFFFFF) or (alphaStroke shl 24)) // 显眼描边
             }
         }
         val normal = GradientDrawable().apply {
@@ -350,8 +426,8 @@ class ClipboardMonitorService : Service() {
             cornerRadius = rPx
             setColor(Color.TRANSPARENT)
         }
-        val pressed = filled(alphaFill = 0x33, alphaStroke = 0xFF)  // 明显高亮
-        val focused = filled(alphaFill = 0x18, alphaStroke = 0x88)  // 轻微高亮
+        val pressed = filled(alphaFill = 0x33, alphaStroke = 0xFF)
+        val focused = filled(alphaFill = 0x18, alphaStroke = 0x88)
 
         return StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_pressed), pressed)
