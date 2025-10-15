@@ -21,10 +21,9 @@ import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Shizuku 后台无感知读取 + 背景探测链
- * - 常驻轮询（shell 命令主路径）不变
- * - 新增：startProbeChain(context) 在应用退到后台后启动“多方案顺序测试”，每方案 2 秒，结束后发通知汇总
- */
+Shizuku 后台无感知读取 + 轮询主路径（保留）
+按你的要求：后台探测“通知栏”取消；startProbeChain 改为 no-op。
+*/
 object ShizukuClipboardMonitor {
 
     private const val TAG = "ShizukuMonitor"
@@ -32,18 +31,14 @@ object ShizukuClipboardMonitor {
     private const val BIND_TIMEOUT_MS = 8000L
     private const val PROBE_NOTIFY_ID = 12002
     private const val CHANNEL_ID = "clipboard_monitor_channel"
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     @Volatile private var pollJob: Job? = null
     @Volatile private var running = false
     @Volatile private var binding = false
     @Volatile private var userService: com.infiniteclipboard.IClipboardUserService? = null
     @Volatile private var probeJob: Job? = null
-
     private val lastSavedHash = AtomicLong(Long.MIN_VALUE)
 
-    // --- 现有初始化（保留） ---
     fun init(context: Context) {
         LogUtils.d(TAG, "init: binderReady=${safePing()}")
         Shizuku.addBinderReceivedListener { if (hasPermission()) start(context) }
@@ -88,7 +83,6 @@ object ShizukuClipboardMonitor {
             startPolling()
         }
 
-        // 绑定用户服务仅作增益（可选），不依赖它
         if (!binding && userService == null) {
             try {
                 binding = true
@@ -135,7 +129,6 @@ object ShizukuClipboardMonitor {
     }
 
     private suspend fun tryReadOnce(): Boolean {
-        // 优先：远端用户服务（若已连上）
         userService?.let { svc ->
             try {
                 val text = svc.getClipboardText()
@@ -144,7 +137,6 @@ object ShizukuClipboardMonitor {
                 LogUtils.e(TAG, "READ_FAIL_VIA_USERSERVICE", t)
             }
         }
-        // 兜底：shell 命令
         val text = readClipboardViaShellCmd()
         return handleTextIfAny(text, "FALLBACK_CMD")
     }
@@ -169,6 +161,7 @@ object ShizukuClipboardMonitor {
             binding = false
             LogUtils.d(TAG, "CONNECTED: ${name?.flattenToShortString()}")
         }
+
         override fun onServiceDisconnected(name: android.content.ComponentName?) {
             userService = null
             LogUtils.d(TAG, "DISCONNECTED: ${name?.flattenToShortString()}")
@@ -192,7 +185,6 @@ object ShizukuClipboardMonitor {
     }
 
     // ============== Shell 命令（通过 Shizuku 以 shell UID 执行；newProcess 反射调用） ==============
-
     private fun readClipboardViaShellCmd(timeoutMs: Long = 1500): String? {
         if (!isAvailable() || !hasPermission()) return null
         val candidates = listOf(
@@ -275,83 +267,13 @@ object ShizukuClipboardMonitor {
         return merged.ifEmpty { null }
     }
 
-    // ============== 背景探测链：每方案 2 秒，全部跑完后发通知 ==============
-
+    // ============== 背景探测链：按需禁用（no-op） ==============
     fun startProbeChain(context: Context, perStepTimeoutMs: Long = 2000L) {
-        if (probeJob?.isActive == true) return
-        val app = context.applicationContext
-        probeJob = scope.launch {
-            val results = mutableListOf<String>()
-
-            fun add(name: String, text: String?, err: Throwable? = null) {
-                when {
-                    !text.isNullOrEmpty() -> {
-                        LogUtils.clipboard(name, text)
-                        results += "$name => 成功：${text.take(60).replace("\n", "\\n")}"
-                    }
-                    err != null -> results += "$name => 异常：${err.javaClass.simpleName} ${err.message}"
-                    else -> results += "$name => 失败（空或不可读）"
-                }
-            }
-
-            // 顺序 1：AIDL 用户服务直读（如已连上）
-            runCatching {
-                withTimeout(perStepTimeoutMs) { tryAidlOnce() }
-            }.onSuccess { add("AIDL_UserService", it) }
-             .onFailure { add("AIDL_UserService", null, it) }
-
-            // 顺序 2：shell cmd clipboard get
-            runCatching {
-                withTimeout(perStepTimeoutMs) { readClipboardViaShellCmd() }
-            }.onSuccess { add("Shell_cmd_get", it) }
-             .onFailure { add("Shell_cmd_get", null, it) }
-
-            // 顺序 3：service call clipboard（旧式事务号粗试）
-            runCatching {
-                withTimeout(perStepTimeoutMs) { readViaServiceCall() }
-            }.onSuccess { add("Shell_service_call", it) }
-             .onFailure { add("Shell_service_call", null, it) }
-
-            // 顺序 4：ClipboardManager（可能命中前台/近期来源）
-            runCatching {
-                withTimeout(perStepTimeoutMs) { readViaClipboardManager(app) }
-            }.onSuccess { add("ClipboardManager", it) }
-             .onFailure { add("ClipboardManager", null, it) }
-
-            sendProbeNotification(app, results)
-        }
+        // 用户要求取消此通知与探测：这里直接 no-op
+        LogUtils.d(TAG, "startProbeChain() ignored as per user request")
     }
 
-    private suspend fun tryAidlOnce(): String? = withContext(Dispatchers.IO) {
-        try { userService?.getClipboardText() } catch (_: Throwable) { null }
-    }
-
-    private fun readViaServiceCall(): String? {
-        if (!isAvailable() || !hasPermission()) return null
-        val candidates = listOf("1", "2", "3", "13")
-        for (code in candidates) {
-            val out = execShell(arrayOf("service", "call", "clipboard", code), 1200)
-            val parsed = parseServiceCallOutput(out)
-            if (!parsed.isNullOrEmpty()) return parsed
-        }
-        return null
-    }
-
-    private fun parseServiceCallOutput(raw: String?): String? {
-        if (raw.isNullOrEmpty()) return null
-        val txt = raw.trim()
-        Regex("""['"](.+?)['"]""").find(txt)?.groupValues?.getOrNull(1)?.let { if (it.isNotEmpty()) return it }
-        val hexes = Regex("""0x[0-9a-fA-F]+""").findAll(txt).map { it.value }.toList()
-        if (hexes.isNotEmpty()) {
-            return try {
-                val bytes = hexes.map { it.removePrefix("0x").toInt(16).toByte() }.toByteArray()
-                val s = String(bytes).trim()
-                if (s.isNotEmpty()) s else null
-            } catch (_: Throwable) { null }
-        }
-        return null
-    }
-
+    // 仍需 Room 工具方法（用于非探测路径）
     private fun readViaClipboardManager(ctx: Context): String? {
         return try {
             val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -375,22 +297,13 @@ object ShizukuClipboardMonitor {
         return sb.toString().trim().ifEmpty { null }
     }
 
+    // 探测通知彻底取消（no-op）
     private fun sendProbeNotification(context: Context, lines: List<String>) {
-        ensureNotificationChannel(context)
-        val content = if (lines.isEmpty()) "无结果" else lines.joinToString("\n")
-        val first = lines.firstOrNull() ?: "探测完成"
-        val notif = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("后台探测完成")
-            .setContentText(first)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setAutoCancel(true)
-            .build()
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(PROBE_NOTIFY_ID, notif)
+        // no-op
+        LogUtils.d(TAG, "sendProbeNotification() suppressed")
     }
 
+    // 确保通知通道（保留，但探测不会用到）
     private fun ensureNotificationChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = context.getSystemService(NotificationManager::class.java)

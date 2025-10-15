@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 文件: app/src/main/res/values/ids.xml -->
+<resources>
+    <!-- 悬浮条/小窗拖动过程中的临时位移存储 id，避免编译期缺少 id 报错 -->
+    <item name="tag_dx" type="id"/>
+    <item name="tag_dy" type="id"/>
+</resources>

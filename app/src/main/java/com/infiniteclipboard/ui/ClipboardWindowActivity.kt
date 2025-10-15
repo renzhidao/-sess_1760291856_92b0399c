@@ -30,8 +30,10 @@ class ClipboardWindowActivity : AppCompatActivity() {
         binding = ActivityClipboardWindowBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // 缩小小窗宽度，避免撑满屏幕
+        val widthPx = (320 * resources.displayMetrics.density).toInt()
         window.setLayout(
-            WindowManager.LayoutParams.MATCH_PARENT,
+            if (widthPx > 0) widthPx else WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT
         )
 
@@ -55,6 +57,10 @@ class ClipboardWindowActivity : AppCompatActivity() {
         binding.recyclerView.apply {
             layoutManager = LinearLayoutManager(this@ClipboardWindowActivity)
             adapter = this@ClipboardWindowActivity.adapter
+            // 与主界面一致的左右内边距，卡片对齐
+            val pad = (16 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            clipToPadding = false
         }
     }
 

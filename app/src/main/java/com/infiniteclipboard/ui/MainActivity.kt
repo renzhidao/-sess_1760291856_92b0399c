@@ -82,11 +82,8 @@ class MainActivity : AppCompatActivity() {
         ensureForegroundClipboardCapture()
     }
 
-    // 新增：当主界面退到后台（onStop）时，触发“背景探测链”
-    override fun onStop() {
-        super.onStop()
-        ShizukuClipboardMonitor.startProbeChain(this, perStepTimeoutMs = 2000L)
-    }
+    // 注意：应用户要求，取消后台“探测链”及其通知，这里移除 onStop 中的调用
+    // override fun onStop() { ... ShizukuClipboardMonitor.startProbeChain(...) } 已删除
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.menu_main, menu)
@@ -166,6 +163,10 @@ class MainActivity : AppCompatActivity() {
         binding.recyclerView.apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = this@MainActivity.adapter
+            // 对齐搜索框：给列表设置与搜索框一致的左右内边距，卡片再用统一 margin
+            val pad = (16 * resources.displayMetrics.density).toInt()
+            setPadding(pad, 0, pad, pad)
+            clipToPadding = false
         }
     }
 
