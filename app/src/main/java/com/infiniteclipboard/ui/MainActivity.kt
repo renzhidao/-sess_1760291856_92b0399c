@@ -19,6 +19,7 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.view.accessibility.AccessibilityManager
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -27,6 +28,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.data.ClipboardEntity
@@ -82,9 +84,6 @@ class MainActivity : AppCompatActivity() {
         ensureForegroundClipboardCapture()
     }
 
-    // 注意：应用户要求，取消后台“探测链”及其通知，这里移除 onStop 中的调用
-    // override fun onStop() { ... ShizukuClipboardMonitor.startProbeChain(...) } 已删除
-
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.menu_main, menu)
         val shizukuEnabled = prefs.getBoolean("shizuku_enabled", false)
@@ -106,7 +105,7 @@ class MainActivity : AppCompatActivity() {
         else -> super.onOptionsItemSelected(item)
     }
 
-    private fun toggleShizuku() {
+    private fun toggleShizuku() { /* 保持原逻辑不变 */ 
         val enabled = prefs.getBoolean("shizuku_enabled", false)
         if (!enabled) {
             ShizukuClipboardMonitor.ensurePermission(this) { granted ->
@@ -127,7 +126,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun toggleEdgeBar() {
+    private fun toggleEdgeBar() { /* 保持原逻辑不变 */ 
         val enabled = prefs.getBoolean("edge_bar_enabled", false)
         if (!enabled) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
@@ -158,19 +157,19 @@ class MainActivity : AppCompatActivity() {
             onCopyClick = { item -> copyToClipboard(item.content) },
             onDeleteClick = { item -> deleteItem(item) },
             onItemClick = { item -> copyToClipboard(item.content) },
-            onShareClick = { item -> shareText(item.content) }
+            onShareClick = { item -> shareText(item.content) },
+            onEditRequest = { item -> showEditBottomSheet(item) }
         )
         binding.recyclerView.apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = this@MainActivity.adapter
-            // 对齐搜索框：给列表设置与搜索框一致的左右内边距，卡片再用统一 margin
             val pad = (16 * resources.displayMetrics.density).toInt()
             setPadding(pad, 0, pad, pad)
             clipToPadding = false
         }
     }
 
-    private fun setupSearchView() {
+    private fun setupSearchView() { /* 原逻辑不变 */ 
         binding.etSearch.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -187,7 +186,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnLog.setOnClickListener { startActivity(Intent(this, LogViewerActivity::class.java)) }
     }
 
-    private fun observeData() {
+    private fun observeData() { /* 原逻辑不变 */ 
         lifecycleScope.launch {
             repository.allItems.collectLatest { items ->
                 adapter.submitList(items)
@@ -201,7 +200,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun searchItems(query: String) {
+    private fun searchItems(query: String) { /* 原逻辑不变 */ 
         lifecycleScope.launch {
             if (query.isEmpty()) {
                 repository.allItems.collectLatest { items ->
@@ -235,7 +234,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch { repository.deleteItem(item) }
     }
 
-    private fun showClearAllDialog() {
+    private fun showClearAllDialog() { /* 原逻辑不变 */ 
         AlertDialog.Builder(this)
             .setTitle(R.string.clear_all)
             .setMessage("确定要清空所有剪切板记录吗？")
@@ -251,7 +250,7 @@ class MainActivity : AppCompatActivity() {
         binding.recyclerView.visibility = if (isEmpty) View.GONE else View.VISIBLE
     }
 
-    private fun checkPermissions() {
+    private fun checkPermissions() { /* 原逻辑不变 */ 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(
                     this, Manifest.permission.POST_NOTIFICATIONS
@@ -265,7 +264,7 @@ class MainActivity : AppCompatActivity() {
         checkAccessibilityPermission()
     }
 
-    private fun checkAccessibilityPermission() {
+    private fun checkAccessibilityPermission() { /* 原逻辑不变 */ 
         if (!isAccessibilityServiceEnabled()) {
             AlertDialog.Builder(this)
                 .setTitle(R.string.accessibility_permission_title)
@@ -278,7 +277,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun isAccessibilityServiceEnabled(): Boolean {
+    private fun isAccessibilityServiceEnabled(): Boolean { /* 原逻辑不变 */ 
         val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
         val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
         val expectedComponentName = ComponentName(this, ClipboardAccessibilityService::class.java).flattenToString()
@@ -288,7 +287,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun exportToUri(uri: Uri) {
+    private fun exportToUri(uri: Uri) { /* 原逻辑不变（略） */ 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val list = repository.getAllOnce()
@@ -314,7 +313,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun importFromUri(uri: Uri) {
+    private fun importFromUri(uri: Uri) { /* 原逻辑不变（略） */ 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val text = contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() } ?: ""
@@ -338,7 +337,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun ensureForegroundClipboardCapture() {
+    private fun ensureForegroundClipboardCapture() { /* 原逻辑不变（略） */ 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val text = com.infiniteclipboard.utils.ClipboardUtils.getClipboardTextWithRetries(
@@ -352,6 +351,40 @@ class MainActivity : AppCompatActivity() {
                 LogUtils.e("MainActivity", "前台入库失败", e)
             }
         }
+    }
+
+    private fun showEditBottomSheet(item: ClipboardEntity) {
+        val dialog = BottomSheetDialog(this)
+        val view = layoutInflater.inflate(R.layout.bottom_sheet_edit_clipboard, null)
+        val et = view.findViewById<EditText>(R.id.etContent)
+        et.setText(item.content)
+
+        view.findViewById<View>(R.id.btnClear).setOnClickListener {
+            et.setText("")
+        }
+        view.findViewById<View>(R.id.btnCopy).setOnClickListener {
+            val text = et.text?.toString().orEmpty()
+            if (text.isNotEmpty()) copyToClipboard(text)
+            Toast.makeText(this, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show()
+        }
+        view.findViewById<View>(R.id.btnShare).setOnClickListener {
+            val text = et.text?.toString().orEmpty()
+            if (text.isNotEmpty()) shareText(text)
+        }
+        view.findViewById<View>(R.id.btnDelete).setOnClickListener {
+            lifecycleScope.launch { repository.deleteItem(item) }
+            dialog.dismiss()
+        }
+        view.findViewById<View>(R.id.btnSave).setOnClickListener {
+            val text = et.text?.toString().orEmpty()
+            lifecycleScope.launch {
+                repository.updateItemContent(item, text)
+            }
+            dialog.dismiss()
+        }
+
+        dialog.setContentView(view)
+        dialog.show()
     }
 
     companion object { private const val PERMISSION_REQUEST_CODE = 1001 }

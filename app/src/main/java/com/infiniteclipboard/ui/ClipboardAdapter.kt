@@ -22,7 +22,8 @@ class ClipboardAdapter(
     private val onCopyClick: (ClipboardEntity) -> Unit,
     private val onDeleteClick: (ClipboardEntity) -> Unit,
     private val onItemClick: (ClipboardEntity) -> Unit,
-    private val onShareClick: (ClipboardEntity) -> Unit
+    private val onShareClick: (ClipboardEntity) -> Unit,
+    private val onEditRequest: (ClipboardEntity) -> Unit
 ) : ListAdapter<ClipboardEntity, ClipboardAdapter.ViewHolder>(DiffCallback()) {
 
     private var highlightQuery: String = ""
@@ -51,7 +52,9 @@ class ClipboardAdapter(
 
         fun bind(item: ClipboardEntity, query: String) {
             binding.apply {
+                // 先直接显示原文本，满足“文本原样保留”的测试与语义
                 tvContent.text = item.content
+                // 如有搜索词，再叠加高亮显示
                 if (query.isNotBlank()) {
                     tvContent.text = buildHighlighted(item.content, query, root.context)
                 }
@@ -60,6 +63,7 @@ class ClipboardAdapter(
                 ibShare.setOnClickListener { onShareClick(item) }
                 ibDelete.setOnClickListener { onDeleteClick(item) }
                 root.setOnClickListener { onItemClick(item) }
+                root.setOnLongClickListener { onEditRequest(item); true }
             }
         }
 
@@ -94,5 +98,3 @@ class ClipboardAdapter(
         override fun areContentsTheSame(oldItem: ClipboardEntity, newItem: ClipboardEntity): Boolean {
             return oldItem == newItem
         }
-    }
-}

@@ -69,7 +69,5 @@
             android:ellipsize="end"
             android:textColor="@color/text_primary"
             android:textSize="15sp" />
-
     </RelativeLayout>
-
 </com.google.android.material.card.MaterialCardView>

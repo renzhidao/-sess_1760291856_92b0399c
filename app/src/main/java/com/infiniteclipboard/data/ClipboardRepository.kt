@@ -8,14 +8,10 @@ import kotlinx.coroutines.flow.Flow
 class ClipboardRepository(private val dao: ClipboardDao) {
 
     val allItems: Flow<List<ClipboardEntity>> = dao.getAllItems()
-
     val itemCount: Flow<Int> = dao.getItemCount()
 
-    fun searchItems(query: String): Flow<List<ClipboardEntity>> {
-        return dao.searchItems(query)
-    }
+    fun searchItems(query: String): Flow<List<ClipboardEntity>> = dao.searchItems(query)
 
-    // 保持 suspend，对应内部在 IO 线程调用非 suspend DAO
     suspend fun insertItem(content: String): Long = withContext(Dispatchers.IO) {
         val existing = dao.findByContent(content)
         if (existing != null) {
@@ -30,25 +26,25 @@ class ClipboardRepository(private val dao: ClipboardDao) {
         }
     }
 
-    suspend fun deleteItem(item: ClipboardEntity) = withContext(Dispatchers.IO) {
-        dao.deleteItem(item)
+    suspend fun deleteItem(item: ClipboardEntity) = withContext(Dispatchers.IO) { dao.deleteItem(item) }
+    suspend fun deleteAll() = withContext(Dispatchers.IO) { dao.deleteAll() }
+    suspend fun getAllOnce(): List<ClipboardEntity> = withContext(Dispatchers.IO) { dao.getAllOnce() }
+
+    // 新增：更新内容（用 REPLACE 插入同 id 实现更新）
+    suspend fun updateItemContent(item: ClipboardEntity, newContent: String): Long = withContext(Dispatchers.IO) {
+        val updated = item.copy(
+            content = newContent,
+            timestamp = System.currentTimeMillis(),
+            length = newContent.length
+        )
+        dao.insertItem(updated)
     }
 
-    suspend fun deleteAll() = withContext(Dispatchers.IO) {
-        dao.deleteAll()
-    }
-
-    // 导出全部
-    suspend fun getAllOnce(): List<ClipboardEntity> = withContext(Dispatchers.IO) {
-        dao.getAllOnce()
-    }
-
-    // 导入：保持原时间戳，按内容插入（由上层决定是否去重）
     suspend fun importItems(items: List<ClipboardEntity>) = withContext(Dispatchers.IO) {
         for (it in items) {
             dao.insertItem(
                 ClipboardEntity(
-                    id = 0, // 让 Room 自增
+                    id = 0,
                     content = it.content,
                     timestamp = it.timestamp,
                     length = it.content.length
