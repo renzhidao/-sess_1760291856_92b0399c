@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.os.Build
@@ -75,7 +76,7 @@ class ClipboardMonitorService : Service() {
             ShizukuClipboardMonitor.start(this)
         }
 
-        LogUtils.d("ClipboardService", "服务已启动，监听器已注册")
+        LogUtils.d("ClipboardService", "服务已启动，监听器已注册 + 边缘小条状态=${prefs.getBoolean("edge_bar_enabled", false)}")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -107,7 +108,7 @@ class ClipboardMonitorService : Service() {
         serviceScope.cancel()
     }
 
-    // 处理系统剪贴板变更
+    // 外部应用写入：可选瞬时前台兜底；自家写入（带标签）跳过
     private fun handleClipboardChange() {
         try {
             val clip = clipboardManager.primaryClip
@@ -128,7 +129,7 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 测试要求方法（保留）
+    // 测试要求方法
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -151,7 +152,7 @@ class ClipboardMonitorService : Service() {
 
     private fun togglePause() { isPaused = !isPaused }
 
-    // ===== 悬浮边缘小条：文字按钮、透明背景、拖动与四边吸附 =====
+    // ========== 边缘小条（蓝色文字按钮、强按压高亮、可拖动、四周吸附） ==========
 
     private fun dp(v: Float): Int = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics
@@ -159,7 +160,7 @@ class ClipboardMonitorService : Service() {
 
     private fun ensureEdgeBar() {
         if (barView != null) return
-        // 权限检查（仅在设备上生效；CI不影响编译）
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             LogUtils.d("ClipboardService", "无悬浮窗权限，跳过显示边缘小条")
             return
@@ -170,6 +171,7 @@ class ClipboardMonitorService : Service() {
         else @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
 
+        // 用 TOP|START + (x,y) 绝对坐标，便于四周吸附
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -179,30 +181,33 @@ class ClipboardMonitorService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = resources.displayMetrics.widthPixels - dp(56f) // 初始靠右
+            x = resources.displayMetrics.widthPixels - dp(56f) // 右侧起始
             y = resources.displayMetrics.heightPixels / 3
         }
 
         val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL // 默认右侧竖排
-            setBackgroundColor(Color.TRANSPARENT) // 完全透明背景
+            orientation = LinearLayout.VERTICAL // 默认在右侧时竖排
+            setBackgroundColor(Color.TRANSPARENT) // 透明背景
             val pad = dp(2f)
             setPadding(pad, pad, pad, pad)
         }
 
+        // 蓝色主题色
         val accent = ContextCompat.getColor(this, R.color.accent)
-        val pressedBg = makePressableBackground(accent, radiusDp = 6f, strokeDp = 1f)
+        val pressBg = makePressableBackground(accent, radiusDp = 10f, strokeDp = 2f)
 
+        // 文字按钮工厂：蓝色、加粗、按下高亮（描边+浅色填充）
         fun makeTextBtn(label: String, onClick: () -> Unit): TextView {
             return TextView(this).apply {
                 text = label
-                setTextColor(accent) // 程序风格的蓝色
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                setPadding(dp(8f), dp(4f), dp(8f), dp(4f))
-                background = pressedBg // 按下出现描边，默认透明
+                setTextColor(accent)
+                typeface = Typeface.DEFAULT_BOLD
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                setPadding(dp(10f), dp(6f), dp(10f), dp(6f))
+                background = pressBg
                 isClickable = true
                 isFocusable = false
-                layoutParams = LinearLayout.LayoutParams(
+                val params = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
@@ -210,11 +215,12 @@ class ClipboardMonitorService : Service() {
                     marginStart = dp(6f)
                     marginEnd = dp(6f)
                 }
+                layoutParams = params
                 setOnClickListener { onClick() }
             }
         }
 
-        // 顺序：复制 / 剪切 / 粘贴 / 记录（文字按钮）
+        // 三个功能 + 记录：复制 / 剪切 / 粘贴 / 记录（“记录”改为拉起透明Activity，造成前台闪烁后读取）
         val btnCopy = makeTextBtn("复制") {
             serviceScope.launch(Dispatchers.IO) {
                 val text = ClipboardAccessibilityService.captureCopy()
@@ -240,14 +246,19 @@ class ClipboardMonitorService : Service() {
             }
         }
         val btnRecord = makeTextBtn("记录") {
-            serviceScope.launch(Dispatchers.IO) {
-                val text = ClipboardUtils.getClipboardTextWithRetries(
-                    this@ClipboardMonitorService, attempts = 6, intervalMs = 150L
-                )
-                LogUtils.clipboard("边条-记录", text)
-                if (!text.isNullOrEmpty()) {
-                    try { repository.insertItem(text) } catch (_: Throwable) {}
+            try {
+                // 核心：拉起“完全透明、无动画”的 TapRecordActivity 瞬时前台读取
+                val it = Intent(this, TapRecordActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK or // 独立任务，避免带起主界面
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                    )
                 }
+                startActivity(it)
+            } catch (t: Throwable) {
+                LogUtils.e("ClipboardService", "拉起瞬时前台读取失败", t)
             }
         }
 
@@ -256,7 +267,7 @@ class ClipboardMonitorService : Service() {
         container.addView(btnPaste)
         container.addView(btnRecord)
 
-        // 拖动 + 吸附逻辑（支持上下拖动与四周吸附）
+        // 拖动 + 四周吸附
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         var downX = 0f
         var downY = 0f
@@ -274,7 +285,7 @@ class ClipboardMonitorService : Service() {
                     startX = lp.x
                     startY = lp.y
                     dragging = false
-                    false // 不拦截，子控件可点击
+                    false // 不拦截，让子控件还能点
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (e.rawX - downX).toInt()
@@ -289,20 +300,23 @@ class ClipboardMonitorService : Service() {
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (dragging) {
+                        // 计算与四边距离，吸附到最近边
                         val distLeft = lp.x
                         val distRight = screenW - (lp.x + v.width)
                         val distTop = lp.y
                         val distBottom = screenH - (lp.y + v.height)
                         val minDist = min(min(distLeft, distRight), min(distTop, distBottom))
                         when (minDist) {
-                            distLeft -> { lp.x = 0; setBarOrientationForEdge(container, Edge.LEFT) }
-                            distRight -> { lp.x = screenW - v.width; setBarOrientationForEdge(container, Edge.RIGHT) }
-                            distTop -> { lp.y = 0; setBarOrientationForEdge(container, Edge.TOP) }
-                            else -> { lp.y = screenH - v.height; setBarOrientationForEdge(container, Edge.BOTTOM) }
+                            distLeft -> { lp.x = 0;   setBarOrientationForEdge(container, edge = Edge.LEFT) }
+                            distRight -> { lp.x = screenW - v.width; setBarOrientationForEdge(container, edge = Edge.RIGHT) }
+                            distTop -> { lp.y = 0;    setBarOrientationForEdge(container, edge = Edge.TOP) }
+                            else -> { lp.y = screenH - v.height; setBarOrientationForEdge(container, edge = Edge.BOTTOM) }
                         }
                         try { wm.updateViewLayout(v, lp) } catch (_: Throwable) {}
                         true
-                    } else false
+                    } else {
+                        false // 点击事件交由子控件
+                    }
                 }
                 else -> false
             }
@@ -318,25 +332,26 @@ class ClipboardMonitorService : Service() {
         }
     }
 
+    // 更高亮的按压背景：按下时有描边+浅色填充；正常透明
     private fun makePressableBackground(accent: Int, radiusDp: Float, strokeDp: Float): StateListDrawable {
-        val radiusPx = dp(radiusDp).toFloat()
+        val rPx = dp(radiusDp).toFloat()
         val strokePx = dp(strokeDp)
 
-        fun shape(stroke: Int, alpha: Int): GradientDrawable {
+        fun filled(alphaFill: Int, alphaStroke: Int): GradientDrawable {
             return GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                setColor(Color.TRANSPARENT)
-                cornerRadius = radiusPx
-                setStroke(strokePx, (accent and 0x00FFFFFF) or (alpha shl 24))
+                cornerRadius = rPx
+                setColor((accent and 0x00FFFFFF) or (alphaFill shl 24)) // 半透明填充
+                setStroke(strokePx, (accent and 0x00FFFFFF) or (alphaStroke shl 24)) // 更显眼描边
             }
         }
         val normal = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
+            cornerRadius = rPx
             setColor(Color.TRANSPARENT)
-            cornerRadius = radiusPx
         }
-        val pressed = shape(stroke = strokePx, alpha = 0xCC) // 按下描边更明显
-        val focused = shape(stroke = strokePx, alpha = 0x66) // 获得焦点时稍弱
+        val pressed = filled(alphaFill = 0x33, alphaStroke = 0xFF)  // 明显高亮
+        val focused = filled(alphaFill = 0x18, alphaStroke = 0x88)  // 轻微高亮
 
         return StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_pressed), pressed)
@@ -346,6 +361,7 @@ class ClipboardMonitorService : Service() {
     }
 
     private fun setBarOrientationForEdge(container: LinearLayout, edge: Edge) {
+        // 左/右：竖排；上/下：横排
         container.orientation = when (edge) {
             Edge.LEFT, Edge.RIGHT -> LinearLayout.VERTICAL
             Edge.TOP, Edge.BOTTOM -> LinearLayout.HORIZONTAL
@@ -360,7 +376,7 @@ class ClipboardMonitorService : Service() {
         LogUtils.d("ClipboardService", "边缘小条已移除")
     }
 
-    // ===== 通知 =====
+    // ========== 通知 ==========
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
