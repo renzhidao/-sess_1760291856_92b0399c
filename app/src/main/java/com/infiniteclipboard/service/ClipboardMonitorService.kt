@@ -16,14 +16,17 @@ import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.provider.Settings
-import android.view.*
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
 import android.view.ViewConfiguration
+import android.view.WindowManager
 import android.widget.ImageView
 import androidx.core.app.NotificationCompat
 import androidx.core.view.ViewCompat
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
-import com.infiniteclipboard.ui.TapRecordActivity
+import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 
@@ -37,6 +40,7 @@ class ClipboardMonitorService : Service() {
     private var lastClipboardContent: String? = null
     private var isPaused: Boolean = false
 
+    // 悬浮按钮
     private lateinit var wm: WindowManager
     private var floatBtn: View? = null
     private var floatParams: WindowManager.LayoutParams? = null
@@ -54,12 +58,7 @@ class ClipboardMonitorService : Service() {
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
 
-        val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
-        if (enableShizuku) ShizukuClipboardMonitor.start(this)
-
-        if (prefs.getBoolean("edge_bar_enabled", false)) {
-            ensureEdgeBar()
-        }
+        if (prefs.getBoolean("edge_bar_enabled", false)) ensureEdgeBar()
 
         LogUtils.d("ClipboardService", "服务已启动，监听器已注册")
     }
@@ -96,22 +95,17 @@ class ClipboardMonitorService : Service() {
         try {
             val clip = clipboardManager.primaryClip
             val label = try { clip?.description?.label?.toString() } catch (_: Throwable) { null }
-            if (label == "com.infiniteclipboard") {
-                LogUtils.d("ClipboardService", "内部写入，跳过采集")
-                return
-            }
-            val shizukuEnabled = prefs.getBoolean("shizuku_enabled", false)
-            if (shizukuEnabled) {
+            if (label == "com.infiniteclipboard") return
+            if (prefs.getBoolean("shizuku_enabled", false)) {
                 ShizukuClipboardMonitor.onPrimaryClipChanged()
                 LogUtils.d("ClipboardService", "Shizuku已运行，已触发后台突发读取")
-            } else {
-                LogUtils.d("ClipboardService", "Shizuku未运行；保持静默")
             }
         } catch (e: Exception) {
             LogUtils.e("ClipboardService", "处理剪切板变化失败", e)
         }
     }
 
+    // 供测试使用的方法名
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -128,7 +122,7 @@ class ClipboardMonitorService : Service() {
             try {
                 repository.deleteAll()
                 lastClipboardContent = null
-            } catch (e: Exception) { e.printStackTrace() }
+            } catch (_: Exception) { }
         }
     }
 
@@ -183,6 +177,8 @@ class ClipboardMonitorService : Service() {
         nm.notify(NOTIFICATION_ID, createNotification())
     }
 
+    // ============ 悬浮按钮：点击仅在服务内读取并入库（不拉起任何Activity） ============
+
     private fun ensureEdgeBar() {
         if (floatBtn != null) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
@@ -220,19 +216,11 @@ class ClipboardMonitorService : Service() {
             setPadding(sizePx / 5, sizePx / 5, sizePx / 5, sizePx / 5)
             ViewCompat.setElevation(this, 12f)
 
-            setOnClickListener {
-                try {
-                    val it = Intent(this@ClipboardMonitorService, TapRecordActivity::class.java).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                    }
-                    startActivity(it)
-                    LogUtils.d("ClipboardService", "悬浮按钮点击，已拉起前台读取")
-                } catch (t: Throwable) {
-                    LogUtils.e("ClipboardService", "拉起前台读取失败", t)
-                }
-            }
+            // 不切屏：点击后在服务内读取→入库→日志，完毕即止
+            setOnClickListener { recordClipboardInService() }
         }
 
+        // 拖拽与点击分离：小位移视为点击，调用 performClick()
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         var downX = 0f
         var downY = 0f
@@ -277,6 +265,25 @@ class ClipboardMonitorService : Service() {
             LogUtils.d("ClipboardService", "悬浮按钮已创建")
         } catch (t: Throwable) {
             LogUtils.e("ClipboardService", "添加悬浮按钮失败", t)
+        }
+    }
+
+    private fun recordClipboardInService() {
+        serviceScope.launch(Dispatchers.IO) {
+            val text = ClipboardUtils.getClipboardTextWithRetries(
+                this@ClipboardMonitorService, attempts = 6, intervalMs = 150L
+            )
+            LogUtils.clipboard("悬浮按钮", text)
+            if (!text.isNullOrEmpty()) {
+                try {
+                    val id = repository.insertItem(text)
+                    LogUtils.d("ClipboardService", "悬浮按钮入库成功 id=$id")
+                } catch (e: Throwable) {
+                    LogUtils.e("ClipboardService", "悬浮按钮入库失败", e)
+                }
+            } else {
+                LogUtils.d("ClipboardService", "悬浮按钮读取失败：内容为空")
+            }
         }
     }
 
