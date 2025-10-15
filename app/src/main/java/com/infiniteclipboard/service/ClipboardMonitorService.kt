@@ -26,7 +26,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.view.ViewCompat
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
-import com.infiniteclipboard.utils.ClipboardUtils
+import com.infiniteclipboard.ui.TapRecordActivity
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 
@@ -177,7 +177,7 @@ class ClipboardMonitorService : Service() {
         nm.notify(NOTIFICATION_ID, createNotification())
     }
 
-    // ============ 悬浮按钮：点击仅在服务内读取并入库（不拉起任何Activity） ============
+    // ============ 悬浮按钮：点击拉起透明 TapRecordActivity（修复：不再把主页带到前台） ============
 
     private fun ensureEdgeBar() {
         if (floatBtn != null) return
@@ -216,8 +216,23 @@ class ClipboardMonitorService : Service() {
             setPadding(sizePx / 5, sizePx / 5, sizePx / 5, sizePx / 5)
             ViewCompat.setElevation(this, 12f)
 
-            // 不切屏：点击后在服务内读取→入库→日志，完毕即止
-            setOnClickListener { recordClipboardInService() }
+            // 修复点：使用“独立临时任务”拉起透明 TapRecordActivity，结束后不会把 MainActivity 带到前台
+            setOnClickListener {
+                try {
+                    val it = Intent(this@ClipboardMonitorService, TapRecordActivity::class.java).apply {
+                        addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_MULTIPLE_TASK or        // 强制临时任务
+                            Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or // 不入最近任务
+                            Intent.FLAG_ACTIVITY_NO_ANIMATION
+                        )
+                    }
+                    startActivity(it)
+                    LogUtils.d("ClipboardService", "悬浮按钮点击，已拉起前台读取（独立任务）")
+                } catch (t: Throwable) {
+                    LogUtils.e("ClipboardService", "拉起前台读取失败", t)
+                }
+            }
         }
 
         // 拖拽与点击分离：小位移视为点击，调用 performClick()
@@ -265,25 +280,6 @@ class ClipboardMonitorService : Service() {
             LogUtils.d("ClipboardService", "悬浮按钮已创建")
         } catch (t: Throwable) {
             LogUtils.e("ClipboardService", "添加悬浮按钮失败", t)
-        }
-    }
-
-    private fun recordClipboardInService() {
-        serviceScope.launch(Dispatchers.IO) {
-            val text = ClipboardUtils.getClipboardTextWithRetries(
-                this@ClipboardMonitorService, attempts = 6, intervalMs = 150L
-            )
-            LogUtils.clipboard("悬浮按钮", text)
-            if (!text.isNullOrEmpty()) {
-                try {
-                    val id = repository.insertItem(text)
-                    LogUtils.d("ClipboardService", "悬浮按钮入库成功 id=$id")
-                } catch (e: Throwable) {
-                    LogUtils.e("ClipboardService", "悬浮按钮入库失败", e)
-                }
-            } else {
-                LogUtils.d("ClipboardService", "悬浮按钮读取失败：内容为空")
-            }
         }
     }
 
