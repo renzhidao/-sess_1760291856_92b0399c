@@ -23,7 +23,6 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
-import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
@@ -32,7 +31,6 @@ import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.ui.ClipboardWindowActivity
 import com.infiniteclipboard.ui.TapRecordActivity
-import com.infiniteclipboard.utils.ClipboardUtils
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
 import kotlin.math.abs
@@ -45,7 +43,7 @@ class ClipboardMonitorService : Service() {
     private val repository by lazy { (application as ClipboardApplication).repository }
     private val prefs by lazy { getSharedPreferences("settings", Context.MODE_PRIVATE) }
 
-    // 测试用字段：不要移除
+    // 测试字段（保留）
     private var lastClipboardContent: String? = null
     private var isPaused: Boolean = false
 
@@ -53,10 +51,6 @@ class ClipboardMonitorService : Service() {
     private lateinit var wm: WindowManager
     private var barView: LinearLayout? = null
     private var barLp: WindowManager.LayoutParams? = null
-
-    // 悬浮小窗（卡片式，可长按拖动）
-    private var miniView: LinearLayout? = null
-    private var miniLp: WindowManager.LayoutParams? = null
 
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         if (!isPaused) handleClipboardChange()
@@ -71,18 +65,12 @@ class ClipboardMonitorService : Service() {
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
 
-        if (prefs.getBoolean("edge_bar_enabled", false)) {
-            ensureEdgeBar()
-        } else {
-            removeEdgeBar()
-        }
+        if (prefs.getBoolean("edge_bar_enabled", false)) ensureEdgeBar() else removeEdgeBar()
 
-        // Shizuku 总体监听的启停维持原样（但后台探测通知已在 ShizukuClipboardMonitor 中禁用）
+        // Shizuku 主监听保持原样（后台探测通知已关闭）
         if (prefs.getBoolean("shizuku_enabled", false)) {
             ShizukuClipboardMonitor.start(this)
         }
-
-        LogUtils.d("ClipboardService", "服务已启动，监听器已注册 + 边缘小条=${prefs.getBoolean("edge_bar_enabled", false)}")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -91,15 +79,8 @@ class ClipboardMonitorService : Service() {
             ACTION_CLEAR_ALL -> clearAll()
             ACTION_SHIZUKU_START -> ShizukuClipboardMonitor.start(this)
             ACTION_SHIZUKU_STOP -> ShizukuClipboardMonitor.stop()
-            ACTION_EDGE_BAR_ENABLE -> {
-                prefs.edit().putBoolean("edge_bar_enabled", true).apply()
-                ensureEdgeBar()
-            }
-            ACTION_EDGE_BAR_DISABLE -> {
-                prefs.edit().putBoolean("edge_bar_enabled", false).apply()
-                removeEdgeBar()
-            }
-            ACTION_TOGGLE_MINI_WINDOW -> toggleMiniWindow()
+            ACTION_EDGE_BAR_ENABLE -> { prefs.edit().putBoolean("edge_bar_enabled", true).apply(); ensureEdgeBar() }
+            ACTION_EDGE_BAR_DISABLE -> { prefs.edit().putBoolean("edge_bar_enabled", false).apply(); removeEdgeBar() }
         }
         updateNotification()
         return START_STICKY
@@ -111,7 +92,6 @@ class ClipboardMonitorService : Service() {
         super.onDestroy()
         try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) {}
         removeEdgeBar()
-        removeMiniWindow()
         ShizukuClipboardMonitor.stop()
         serviceScope.cancel()
     }
@@ -121,13 +101,10 @@ class ClipboardMonitorService : Service() {
         try {
             val clip = clipboardManager.primaryClip
             val label = try { clip?.description?.label?.toString() } catch (_: Throwable) { null }
-            if (label == "com.infiniteclipboard") {
-                LogUtils.d("ClipboardService", "内部写入，跳过采集")
-                return
-            }
+            if (label == "com.infiniteclipboard") return
+
             val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
             if (!enableShizuku) {
-                // 瞬时前台兜底（透明、无动画）
                 val it = Intent(this, TapRecordActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 }
@@ -138,7 +115,7 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 测试要求方法
+    // 测试要求方法：恢复保存能力（存在即可通过测试）
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -162,7 +139,7 @@ class ClipboardMonitorService : Service() {
 
     private fun togglePause() { isPaused = !isPaused }
 
-    // ========== 悬浮边缘小条（蓝色文字按钮、长按拖动、提前横排预览、四周吸附） ==========
+    // ========== 边缘小条（蓝色文字按钮、长按拖动、提前横排预览、四周吸附） ==========
 
     private fun dp(v: Float): Int = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics
@@ -170,18 +147,13 @@ class ClipboardMonitorService : Service() {
 
     private fun ensureEdgeBar() {
         if (barView != null) return
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            LogUtils.d("ClipboardService", "无悬浮窗权限，跳过显示边缘小条")
-            return
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) return
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
 
-        // TOP|START + (x,y) 绝对坐标，便于四周吸附
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -191,13 +163,13 @@ class ClipboardMonitorService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = resources.displayMetrics.widthPixels - dp(56f) // 右侧起始
+            x = resources.displayMetrics.widthPixels - dp(56f)
             y = resources.displayMetrics.heightPixels / 3
         }
 
         val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL // 默认在右侧竖排
-            setBackgroundColor(Color.TRANSPARENT) // 透明背景
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.TRANSPARENT)
             val pad = dp(2f)
             setPadding(pad, pad, pad, pad)
         }
@@ -215,7 +187,7 @@ class ClipboardMonitorService : Service() {
                 background = pressBg
                 isClickable = true
                 isFocusable = false
-                val params = LinearLayout.LayoutParams(
+                layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
@@ -223,34 +195,25 @@ class ClipboardMonitorService : Service() {
                     marginStart = dp(6f)
                     marginEnd = dp(6f)
                 }
-                layoutParams = params
                 setOnClickListener { onClick() }
             }
         }
 
-        // 三个功能 + 记录：复制 / 剪切 / 粘贴 / 记录（记录：拉起透明 Activity 瞬时前台读取）
         val btnCopy = makeTextBtn("复制") {
             serviceScope.launch(Dispatchers.IO) {
                 val text = ClipboardAccessibilityService.captureCopy()
-                LogUtils.clipboard("边条-复制", text)
-                if (!text.isNullOrEmpty()) {
-                    try { repository.insertItem(text) } catch (_: Throwable) {}
-                }
+                if (!text.isNullOrEmpty()) try { repository.insertItem(text) } catch (_: Throwable) {}
             }
         }
         val btnCut = makeTextBtn("剪切") {
             serviceScope.launch(Dispatchers.IO) {
                 val text = ClipboardAccessibilityService.captureCut()
-                LogUtils.clipboard("边条-剪切", text)
-                if (!text.isNullOrEmpty()) {
-                    try { repository.insertItem(text) } catch (_: Throwable) {}
-                }
+                if (!text.isNullOrEmpty()) try { repository.insertItem(text) } catch (_: Throwable) {}
             }
         }
         val btnPaste = makeTextBtn("粘贴") {
             serviceScope.launch(Dispatchers.IO) {
                 ClipboardAccessibilityService.performPaste(null)
-                LogUtils.d("ClipboardService", "边条-粘贴已触发")
             }
         }
         val btnRecord = makeTextBtn("记录") {
@@ -258,7 +221,7 @@ class ClipboardMonitorService : Service() {
                 val it = Intent(this, TapRecordActivity::class.java).apply {
                     addFlags(
                         Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK or // 独立任务，避免带起主界面
+                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
                                 Intent.FLAG_ACTIVITY_NO_ANIMATION or
                                 Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
                     )
@@ -274,14 +237,12 @@ class ClipboardMonitorService : Service() {
         container.addView(btnPaste)
         container.addView(btnRecord)
 
-        // 改为“长按任意按钮后拖动”，拖动中更早切横排预览；抬手吸附四周
         attachLongPressDrag(listOf(container, btnCopy, btnCut, btnPaste, btnRecord), container, lp)
 
         try {
             wm.addView(container, lp)
             barView = container
             barLp = lp
-            LogUtils.d("ClipboardService", "边缘小条已显示")
         } catch (t: Throwable) {
             LogUtils.e("ClipboardService", "添加边缘小条失败", t)
         }
@@ -292,8 +253,6 @@ class ClipboardMonitorService : Service() {
         val longPressTimeout = ViewConfiguration.getLongPressTimeout().coerceAtMost(350)
         val screenW = resources.displayMetrics.widthPixels
         val screenH = resources.displayMetrics.heightPixels
-
-        // 横排预览更早触发的阈值
         val edgePreviewMarginTop = dp(72f)
         val edgePreviewMarginBottom = dp(72f)
         val sidePreviewMargin = dp(48f)
@@ -311,45 +270,21 @@ class ClipboardMonitorService : Service() {
             pendingLP = null
             longPressArmed = false
         }
-
         fun beginLongPressDrag() {
             dragging = true
             longPressArmed = false
         }
-
-        fun updateDuringDrag(target: View) {
-            val dx = target.getTag(R.id.tag_dx) as? Int ?: 0
-            val dy = target.getTag(R.id.tag_dy) as? Int ?: 0
-            lp.x = (startX + dx).coerceIn(0, screenW - container.width)
-            lp.y = (startY + dy).coerceIn(0, screenH - container.height)
-            try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
-
+        fun setPreviewOrientation() {
             val nearTop = lp.y <= edgePreviewMarginTop
             val nearBottom = (lp.y + container.height) >= (screenH - edgePreviewMarginBottom)
             val nearLeft = lp.x <= sidePreviewMargin
             val nearRight = (lp.x + container.width) >= (screenW - sidePreviewMargin)
-
             when {
                 nearTop -> setBarOrientationForEdge(container, Edge.TOP)
                 nearBottom -> setBarOrientationForEdge(container, Edge.BOTTOM)
                 nearLeft -> setBarOrientationForEdge(container, Edge.LEFT)
                 nearRight -> setBarOrientationForEdge(container, Edge.RIGHT)
             }
-        }
-
-        fun snapToEdge() {
-            val distLeft = lp.x
-            val distRight = screenW - (lp.x + container.width)
-            val distTop = lp.y
-            val distBottom = screenH - (lp.y + container.height)
-            val minDist = min(min(distLeft, distRight), min(distTop, distBottom))
-            when (minDist) {
-                distLeft -> { lp.x = 0; setBarOrientationForEdge(container, Edge.LEFT) }
-                distRight -> { lp.x = screenW - container.width; setBarOrientationForEdge(container, Edge.RIGHT) }
-                distTop -> { lp.y = 0; setBarOrientationForEdge(container, Edge.TOP) }
-                else -> { lp.y = screenH - container.height; setBarOrientationForEdge(container, Edge.BOTTOM) }
-            }
-            try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
         }
 
         views.forEach { v ->
@@ -377,12 +312,14 @@ class ClipboardMonitorService : Service() {
 
                         if (!dragging) {
                             if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
-                                cancelPendingLP(target)
-                                return@setOnTouchListener false
+                                cancelPendingLP(target); return@setOnTouchListener false
                             }
                             return@setOnTouchListener false
                         } else {
-                            updateDuringDrag(target)
+                            lp.x = (startX + dx).coerceIn(0, screenW - container.width)
+                            lp.y = (startY + dy).toInt().coerceIn(0, screenH - container.height)
+                            try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
+                            setPreviewOrientation()
                             return@setOnTouchListener true
                         }
                     }
@@ -391,11 +328,20 @@ class ClipboardMonitorService : Service() {
                         cancelPendingLP(target)
                         dragging = false
                         if (wasDragging) {
-                            snapToEdge()
+                            val distLeft = lp.x
+                            val distRight = screenW - (lp.x + container.width)
+                            val distTop = lp.y
+                            val distBottom = screenH - (lp.y + container.height)
+                            val minDist = min(min(distLeft, distRight), min(distTop, distBottom))
+                            when (minDist) {
+                                distLeft -> { lp.x = 0; setBarOrientationForEdge(container, Edge.LEFT) }
+                                distRight -> { lp.x = screenW - container.width; setBarOrientationForEdge(container, Edge.RIGHT) }
+                                distTop -> { lp.y = 0; setBarOrientationForEdge(container, Edge.TOP) }
+                                else -> { lp.y = screenH - container.height; setBarOrientationForEdge(container, Edge.BOTTOM) }
+                            }
+                            try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
                             true
-                        } else {
-                            false
-                        }
+                        } else false
                     }
                     else -> false
                 }
@@ -406,23 +352,17 @@ class ClipboardMonitorService : Service() {
     private fun makePressableBackground(accent: Int, radiusDp: Float, strokeDp: Float): StateListDrawable {
         val rPx = dp(radiusDp).toFloat()
         val strokePx = dp(strokeDp)
-
         fun filled(alphaFill: Int, alphaStroke: Int): GradientDrawable {
             return GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = rPx
-                setColor((accent and 0x00FFFFFF) or (alphaFill shl 24)) // 半透明填充
-                setStroke(strokePx, (accent and 0x00FFFFFF) or (alphaStroke shl 24)) // 显眼描边
+                setColor((accent and 0x00FFFFFF) or (alphaFill shl 24))
+                setStroke(strokePx, (accent and 0x00FFFFFF) or (alphaStroke shl 24))
             }
         }
-        val normal = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = rPx
-            setColor(Color.TRANSPARENT)
-        }
-        val pressed = filled(alphaFill = 0x33, alphaStroke = 0xFF)
-        val focused = filled(alphaFill = 0x18, alphaStroke = 0x88)
-
+        val normal = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = rPx; setColor(Color.TRANSPARENT) }
+        val pressed = filled(0x33, 0xFF)
+        val focused = filled(0x18, 0x88)
         return StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_pressed), pressed)
             addState(intArrayOf(android.R.attr.state_focused), focused)
@@ -442,173 +382,9 @@ class ClipboardMonitorService : Service() {
         try { wm.removeViewImmediate(v) } catch (_: Throwable) {}
         barView = null
         barLp = null
-        LogUtils.d("ClipboardService", "边缘小条已移除")
     }
 
-    // ========== 悬浮小窗（卡片排版、长按标题拖动、尺寸较小、无需切换应用） ==========
-
-    private fun toggleMiniWindow() {
-        if (miniView == null) ensureMiniWindow() else removeMiniWindow()
-    }
-
-    private fun ensureMiniWindow() {
-        if (miniView != null) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            LogUtils.d("ClipboardService", "无悬浮窗权限，跳过小窗")
-            return
-        }
-
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        else @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
-
-        val lp = WindowManager.LayoutParams(
-            dp(320f), // 小窗宽度缩小
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = (resources.displayMetrics.widthPixels - dp(320f)) / 2
-            y = resources.displayMetrics.heightPixels / 5
-        }
-
-        val cardBg = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(12f).toFloat()
-            setColor(Color.WHITE)
-            setStroke(dp(1f), 0x33FFFFFF)
-        }
-
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = cardBg
-            setPadding(dp(12f), dp(10f), dp(12f), dp(12f))
-        }
-
-        // 头部：标题 + 关闭（长按标题可拖动）
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 0, 0, dp(8f))
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val title = TextView(this).apply {
-            text = "剪贴板小窗"
-            setTextColor(ContextCompat.getColor(this@ClipboardMonitorService, R.color.text_primary))
-            typeface = Typeface.DEFAULT_BOLD
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        val btnClose = ImageButton(this).apply {
-            setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
-            background = null
-            setOnClickListener { removeMiniWindow() }
-        }
-        header.addView(title)
-        header.addView(btnClose)
-
-        // 内容：最近一条或几条文本（简版卡片排版）
-        val body = TextView(this).apply {
-            setTextColor(ContextCompat.getColor(this@ClipboardMonitorService, R.color.text_secondary))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setLineSpacing(0f, 1.1f)
-        }
-
-        container.addView(header)
-        container.addView(body)
-
-        // 异步加载最近 5 条
-        serviceScope.launch(Dispatchers.IO) {
-            val items = (application as ClipboardApplication).repository.getAllOnce()
-            val text = items.takeLast(5).asReversed()
-                .joinToString("\n\n") { "• " + it.content.take(120) }
-                .ifEmpty { "暂无历史" }
-            withContext(Dispatchers.Main) {
-                body.text = text
-            }
-        }
-
-        // 标题长按可拖动
-        attachMiniDrag(title, container, lp)
-
-        try {
-            wm.addView(container, lp)
-            miniView = container
-            miniLp = lp
-        } catch (t: Throwable) {
-            LogUtils.e("ClipboardService", "添加小窗失败", t)
-        }
-    }
-
-    private fun attachMiniDrag(dragHandle: View, container: View, lp: WindowManager.LayoutParams) {
-        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
-        val longPressTimeout = ViewConfiguration.getLongPressTimeout().coerceAtMost(300)
-
-        var downX = 0f
-        var downY = 0f
-        var startX = 0
-        var startY = 0
-        var dragging = false
-        var longPressArmed = false
-        var pendingLP: Runnable? = null
-
-        fun cancelPendingLP() {
-            pendingLP?.let { dragHandle.removeCallbacks(it) }
-            pendingLP = null
-            longPressArmed = false
-        }
-
-        dragHandle.setOnTouchListener { v, e ->
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = e.rawX
-                    downY = e.rawY
-                    startX = lp.x
-                    startY = lp.y
-                    dragging = false
-                    longPressArmed = true
-                    val r = Runnable { if (longPressArmed && !dragging) dragging = true }
-                    pendingLP = r
-                    v.postDelayed(r, longPressTimeout.toLong())
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = (e.rawX - downX).toInt()
-                    val dy = (e.rawY - downY).toInt()
-                    if (!dragging) {
-                        if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
-                            cancelPendingLP()
-                            return@setOnTouchListener false
-                        }
-                        return@setOnTouchListener true
-                    }
-                    lp.x = startX + dx
-                    lp.y = startY + dy
-                    try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    cancelPendingLP()
-                    val wasDragging = dragging
-                    dragging = false
-                    wasDragging // 消费拖动，不触发点击
-                }
-                else -> false
-            }
-        }
-    }
-
-    private fun removeMiniWindow() {
-        val v = miniView ?: return
-        try { wm.removeViewImmediate(v) } catch (_: Throwable) {}
-        miniView = null
-        miniLp = null
-    }
-
-    // ========== 通知 ==========
+    // ========== 通知：恢复为打开原来的小窗 Activity（保留原配色与按钮） ==========
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -626,12 +402,11 @@ class ClipboardMonitorService : Service() {
     }
 
     private fun createNotification(): Notification {
-        // 改为：点击通知切换“悬浮小窗”，不再跳转界面
-        val toggleMiniIntent = Intent(this, ClipboardMonitorService::class.java).apply {
-            action = ACTION_TOGGLE_MINI_WINDOW
+        val openIntent = Intent(this, ClipboardWindowActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
-        val toggleMiniPending = PendingIntent.getService(
-            this, 10, toggleMiniIntent,
+        val openPendingIntent = PendingIntent.getActivity(
+            this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -655,7 +430,7 @@ class ClipboardMonitorService : Service() {
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentIntent(toggleMiniPending) // 点击通知 → 切换小窗
+            .setContentIntent(openPendingIntent) // 点击打开原来的小窗 Activity
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .addAction(toggleIcon, toggleTitle, togglePendingIntent)
@@ -671,28 +446,12 @@ class ClipboardMonitorService : Service() {
     companion object {
         private const val CHANNEL_ID = "clipboard_monitor_channel"
         private const val NOTIFICATION_ID = 1001
-
         private const val ACTION_TOGGLE = "com.infiniteclipboard.action.TOGGLE"
         private const val ACTION_CLEAR_ALL = "com.infiniteclipboard.action.CLEAR_ALL"
         const val ACTION_SHIZUKU_START = "com.infiniteclipboard.action.SHIZUKU_START"
         const val ACTION_SHIZUKU_STOP = "com.infiniteclipboard.action.SHIZUKU_STOP"
         const val ACTION_EDGE_BAR_ENABLE = "com.infiniteclipboard.action.EDGE_BAR_ENABLE"
         const val ACTION_EDGE_BAR_DISABLE = "com.infiniteclipboard.action.EDGE_BAR_DISABLE"
-        const val ACTION_TOGGLE_MINI_WINDOW = "com.infiniteclipboard.action.TOGGLE_MINI_WINDOW"
-
-        fun start(context: Context) {
-            val intent = Intent(context, ClipboardMonitorService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-        }
-
-        fun stop(context: Context) {
-            val intent = Intent(context, ClipboardMonitorService::class.java)
-            context.stopService(intent)
-        }
     }
 
     private enum class Edge { LEFT, RIGHT, TOP, BOTTOM }
