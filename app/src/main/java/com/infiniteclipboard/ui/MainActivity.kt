@@ -18,7 +18,7 @@ import android.text.TextWatcher
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
-import android:view.accessibility.AccessibilityManager
+import android.view.accessibility.AccessibilityManager
 import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -203,7 +203,7 @@ class MainActivity : AppCompatActivity() {
                     startActivity(intent)
                     Toast.makeText(this, "请授予"在其他应用上层显示"权限后再开启", Toast.LENGTH_LONG).show()
                 } catch (_: Throwable) {
-                    Toast.makeText(this, "无法打开悬浮窗权限设置", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "无法打开悬浮窗���限设置", Toast.LENGTH_LONG).show()
                 }
                 return
             }
