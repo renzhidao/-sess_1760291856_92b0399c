@@ -34,7 +34,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
         LogUtils.d("AccessibilityService", "辅助服务已启动")
     }
 
-    // 转发“全局点击”到前台服务（仅用于边缘小条双击唤醒，不触发读取）
+    // 转发“全局点击”到 Service（用于边缘小条双击唤醒）
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
             sendBroadcast(Intent(ClipboardMonitorService.ACTION_SCREEN_TAPPED))
