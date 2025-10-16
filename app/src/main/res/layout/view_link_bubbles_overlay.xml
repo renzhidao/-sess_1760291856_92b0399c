@@ -7,15 +7,15 @@
     android:layout_height="match_parent"
     android:clickable="true"
     android:focusable="true"
-    android:background="@android:color/transparent"
+    android:background="#60000000"
     android:visibility="gone">
 
-    <!-- 左侧瀑布流的容器，透明背景，显示下方被虚化的内容 -->
+    <!-- 左侧瀑布流气泡容器 -->
     <com.google.android.flexbox.FlexboxLayout
         android:id="@+id/bubbles_container"
         android:layout_width="wrap_content"
-        android:layout_height="match_parent"
-        android:layout_gravity="start|top"
+        android:layout_height="wrap_content"
+        android:layout_gravity="start|center_vertical"
         android:paddingStart="12dp"
         android:paddingTop="12dp"
         android:paddingEnd="12dp"

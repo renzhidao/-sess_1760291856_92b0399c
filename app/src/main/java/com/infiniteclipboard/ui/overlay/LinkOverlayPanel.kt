@@ -15,14 +15,14 @@ import com.infiniteclipboard.utils.LinkExtractor
 
 /**
  * 气泡样式的链接覆盖层：
- * - 不显示标题/面板
- * - 整个列表区域（blurTarget）虚化，只有气泡是清晰的
+ * - 原界面保持不动但虚化
+ * - 气泡悬浮在半透明遮罩之上
  * - 左侧瀑布流，自适应宽度
  */
 class LinkOverlayPanel(
     private val root: ViewGroup,
     private val blurTarget: View,
-    private var panelWidthRatio: Float = 0.66f // 预留参数，当前不限制宽度，只控制动画时间
+    private var panelWidthRatio: Float = 0.66f
 ) {
     private val overlay: View = LayoutInflater.from(root.context)
         .inflate(R.layout.view_link_bubbles_overlay, root, false)
@@ -33,7 +33,6 @@ class LinkOverlayPanel(
 
     init {
         overlay.visibility = View.GONE
-        // 点击任意空白处关闭
         overlay.setOnClickListener { hide() }
         root.addView(overlay)
     }
@@ -75,20 +74,32 @@ class LinkOverlayPanel(
             bubbles.addView(item)
         }
 
+        // 先虚化背景
         applyBlur()
+        
+        // 再显示遮罩和气泡
         overlay.alpha = 0f
         overlay.visibility = View.VISIBLE
-        overlay.animate().alpha(1f).setDuration(120).setInterpolator(DecelerateInterpolator()).start()
+        overlay.animate()
+            .alpha(1f)
+            .setDuration(200)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+        
         onShowStateChanged?.invoke(true)
     }
 
     fun hide() {
         if (!isShowing()) return
-        overlay.animate().alpha(0f).setDuration(100).withEndAction {
-            overlay.visibility = View.GONE
-            clearBlur()
-            onShowStateChanged?.invoke(false)
-        }.start()
+        overlay.animate()
+            .alpha(0f)
+            .setDuration(150)
+            .withEndAction {
+                overlay.visibility = View.GONE
+                clearBlur()
+                onShowStateChanged?.invoke(false)
+            }
+            .start()
     }
 
     fun hideIfShowing(): Boolean {
@@ -98,10 +109,10 @@ class LinkOverlayPanel(
     private fun applyBlur() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
-                val effect = RenderEffect.createBlurEffect(18f, 18f, Shader.TileMode.CLAMP)
+                val effect = RenderEffect.createBlurEffect(25f, 25f, Shader.TileMode.CLAMP)
                 blurTarget.setRenderEffect(effect)
             } catch (_: Throwable) { }
-        } // < S 自动降级为无模糊（可后续改 bitmap 模糊）
+        }
     }
 
     private fun clearBlur() {
