@@ -4,6 +4,7 @@ package com.infiniteclipboard.service
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -27,17 +28,25 @@ class ClipboardAccessibilityService : AccessibilityService() {
             flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                     AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                     AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-            // 监听点击事件，用于边缘小条双击唤醒
             eventTypes = eventTypes or AccessibilityEvent.TYPE_VIEW_CLICKED
         }
         instanceRef = WeakReference(this)
         LogUtils.d("AccessibilityService", "辅助服务已启动")
     }
 
-    // 转发“全局点击”到 Service（用于边缘小条双击唤醒）
+    // 不再发广播，直接启动 Service 发送 ACTION_SCREEN_TAPPED，避免 registerReceiver 重载冲突
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            sendBroadcast(Intent(ClipboardMonitorService.ACTION_SCREEN_TAPPED))
+            try {
+                val it = Intent(this, ClipboardMonitorService::class.java).apply {
+                    action = ClipboardMonitorService.ACTION_SCREEN_TAPPED
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(it)
+                } else {
+                    startService(it)
+                }
+            } catch (_: Throwable) { }
         }
     }
 
@@ -105,7 +114,6 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } else null
         }
 
-        // 复制
         fun captureCopy(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -124,7 +132,6 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return textToRecord
         }
 
-        // 剪切
         fun captureCut(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -154,7 +161,6 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return cutText
         }
 
-        // 粘贴
         fun performPaste(text: String?): Boolean {
             val svc = instanceRef?.get() ?: return false
             val node = focusedEditableNode(svc) ?: return false

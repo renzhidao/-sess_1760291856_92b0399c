@@ -6,7 +6,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -72,13 +71,6 @@ class ClipboardMonitorService : Service() {
     private val TAP_WINDOW_MS = 10_000L
     private val AUTO_HIDE_DELAY_MS = 10_000L
 
-    // 全局点击广播（由无障碍服务转发）
-    private val screenTapReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == ACTION_SCREEN_TAPPED) onScreenTap()
-        }
-    }
-
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         if (!isPaused) handleClipboardChange()
     }
@@ -91,9 +83,6 @@ class ClipboardMonitorService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
-
-        // 稳定注册：33+ 反射取 flags，低版本用双参重载，避免重载混淆
-        registerScreenTapReceiverSafely()
 
         if (prefs.getBoolean("edge_bar_enabled", false)) ensureEdgeBar() else removeEdgeBar()
         if (prefs.getBoolean("shizuku_enabled", false)) {
@@ -110,6 +99,7 @@ class ClipboardMonitorService : Service() {
             ACTION_EDGE_BAR_ENABLE -> { prefs.edit().putBoolean("edge_bar_enabled", true).apply(); ensureEdgeBar() }
             ACTION_EDGE_BAR_DISABLE -> { prefs.edit().putBoolean("edge_bar_enabled", false).apply(); removeEdgeBar() }
             ACTION_SHOW_FLOATING_LIST -> toggleFloatingListOverlay()
+            ACTION_SCREEN_TAPPED -> onScreenTap() // 无障碍服务通过 startService 通知
         }
         updateNotification()
         return START_STICKY
@@ -120,7 +110,6 @@ class ClipboardMonitorService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) {}
-        try { unregisterReceiver(screenTapReceiver) } catch (_: Throwable) {}
         removeEdgeBar()
         removeFloatingListOverlay()
         ShizukuClipboardMonitor.stop()
@@ -146,6 +135,7 @@ class ClipboardMonitorService : Service() {
         }
     }
 
+    // 测试需要：实现内容保存方法
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -608,29 +598,6 @@ class ClipboardMonitorService : Service() {
         nm.notify(NOTIFICATION_ID, createNotification())
     }
 
-    // 关键修复：稳定注册点击广播（避免 flags 类型重载冲突）
-    private fun registerScreenTapReceiverSafely() {
-        val filter = android.content.IntentFilter(ACTION_SCREEN_TAPPED)
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val ctxCls = Class.forName("android.content.Context")
-                val f = ctxCls.getField("RECEIVER_NOT_EXPORTED")
-                val flags = f.getInt(null)
-                // 直接使用 3 参 Int 重载
-                this.registerReceiver(screenTapReceiver, filter, flags)
-            } else {
-                @Suppress("DEPRECATION")
-                this.registerReceiver(screenTapReceiver, filter)
-            }
-        } catch (_: Throwable) {
-            // 兜底：用旧版双参，至少不编译报错
-            try {
-                @Suppress("DEPRECATION")
-                this.registerReceiver(screenTapReceiver, filter)
-            } catch (_: Throwable) { }
-        }
-    }
-
     companion object {
         private const val CHANNEL_ID = "clipboard_monitor_channel"
         private const val NOTIFICATION_ID = 1001
@@ -642,6 +609,21 @@ class ClipboardMonitorService : Service() {
         const val ACTION_EDGE_BAR_DISABLE = "com.infiniteclipboard.action.EDGE_BAR_DISABLE"
         const val ACTION_SHOW_FLOATING_LIST = "com.infiniteclipboard.action.SHOW_FLOATING_LIST"
         const val ACTION_SCREEN_TAPPED = "com.infiniteclipboard.SCREEN_TAPPED"
+
+        // 恢复 start/stop，修复 MainActivity 未解析错误
+        fun start(context: Context) {
+            val intent = Intent(context, ClipboardMonitorService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun stop(context: Context) {
+            val intent = Intent(context, ClipboardMonitorService::class.java)
+            context.stopService(intent)
+        }
     }
 
     private enum class Edge { LEFT, RIGHT, TOP, BOTTOM }
