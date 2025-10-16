@@ -1,17 +1,19 @@
-// header
+// 文件: app/src/main/java/com/infiniteclipboard/ui/overlay/LinkOverlayPanel.kt
 package com.infiniteclipboard.ui.overlay
 
-import android.graphics.RenderEffect
-import android.graphics.Shader
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.os.Build
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
+import android.widget.ImageView
 import android.widget.TextView
 import com.google.android.flexbox.FlexboxLayout
 import com.infiniteclipboard.R
 import com.infiniteclipboard.utils.LinkExtractor
+import com.infiniteclipboard.utils.BlurUtils
 
 class LinkOverlayPanel(
     private val root: ViewGroup,
@@ -23,6 +25,7 @@ class LinkOverlayPanel(
 
     private val bubbles: FlexboxLayout = overlay.findViewById(R.id.bubbles_container)
     private val scrim: View = overlay.findViewById(R.id.scrim)
+    private val blurBg: ImageView = overlay.findViewById(R.id.iv_blur_bg)
 
     var onShowStateChanged: ((Boolean) -> Unit)? = null
 
@@ -70,17 +73,16 @@ class LinkOverlayPanel(
             bubbles.addView(item)
         }
 
-        applyBlur()
-        scrim.visibility = View.VISIBLE
-
-        overlay.alpha = 0f
-        overlay.visibility = View.VISIBLE
-        overlay.animate()
-            .alpha(1f)
-            .setDuration(180)
-            .setInterpolator(DecelerateInterpolator())
-            .start()
-        onShowStateChanged?.invoke(true)
+        captureAndBlur {
+            overlay.alpha = 0f
+            overlay.visibility = View.VISIBLE
+            overlay.animate()
+                .alpha(1f)
+                .setDuration(180)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+            onShowStateChanged?.invoke(true)
+        }
     }
 
     fun hide() {
@@ -90,8 +92,8 @@ class LinkOverlayPanel(
             .setDuration(140)
             .withEndAction {
                 overlay.visibility = View.GONE
-                clearBlur()
                 scrim.visibility = View.GONE
+                blurBg.setImageDrawable(null)
                 onShowStateChanged?.invoke(false)
             }
             .start()
@@ -101,18 +103,32 @@ class LinkOverlayPanel(
         return if (isShowing()) { hide(); true } else false
     }
 
-    private fun applyBlur() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            try {
-                val effect = RenderEffect.createBlurEffect(24f, 24f, Shader.TileMode.CLAMP)
-                blurTarget.setRenderEffect(effect)
-            } catch (_: Throwable) { }
+    private fun captureAndBlur(onReady: () -> Unit) {
+        blurTarget.post {
+            val bitmap = captureView(blurTarget)
+            if (bitmap != null) {
+                val blurred = BlurUtils.fastBlur(bitmap, 20)
+                blurBg.setImageBitmap(blurred)
+                blurBg.visibility = View.VISIBLE
+            }
+            scrim.visibility = View.VISIBLE
+            onReady()
         }
     }
 
-    private fun clearBlur() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            try { blurTarget.setRenderEffect(null) } catch (_: Throwable) { }
-        }
+    private fun captureView(view: View): Bitmap? {
+        val w = view.width
+        val h = view.height
+        if (w <= 0 || h <= 0) return null
+        
+        val scale = 0.25f
+        val sw = (w * scale).toInt().coerceAtLeast(1)
+        val sh = (h * scale).toInt().coerceAtLeast(1)
+        
+        val bitmap = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.scale(scale, scale)
+        view.draw(canvas)
+        return bitmap
     }
 }

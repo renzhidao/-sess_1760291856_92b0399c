@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 文件: app/src/main/res/drawable/ic_bubble_tail_left.xml -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="8dp"
     android:height="12dp"
