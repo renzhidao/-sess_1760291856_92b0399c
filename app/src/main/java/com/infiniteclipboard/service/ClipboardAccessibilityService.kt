@@ -34,7 +34,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
         LogUtils.d("AccessibilityService", "辅助服务已启动")
     }
 
-    // 不再发广播，直接启动 Service 发送 ACTION_SCREEN_TAPPED
+    // 用 startService 投递点击事件到前台服务（避免广播/重载冲突）
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
             try {
@@ -114,6 +114,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } else null
         }
 
+        // 复制
         fun captureCopy(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -132,6 +133,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return textToRecord
         }
 
+        // 剪切
         fun captureCut(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -161,13 +163,19 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return cutText
         }
 
+        // 粘贴（修复：明确返回布尔，避免“null 作为非空 Boolean”）
         fun performPaste(text: String?): Boolean {
-            val svc = instanceRef?.get() ?: return null
+            val svc = instanceRef?.get() ?: return false
             val node = focusedEditableNode(svc) ?: return false
             return try {
-                if (!text.isNullOrEmpty()) ClipboardUtils.setClipboardText(svc, text)
-                if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) return true
-                if (!text.isNullOrEmpty()) setText(node, text) else false
+                // 先尝试直接粘贴
+                var ok = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+                // 失败时用指定文本兜底
+                if (!ok && !text.isNullOrEmpty()) {
+                    ClipboardUtils.setClipboardText(svc, text)
+                    ok = setText(node, text)
+                }
+                ok
             } catch (_: Throwable) { false }
         }
     }

@@ -57,7 +57,7 @@ class ClipboardMonitorService : Service() {
     private var barView: LinearLayout? = null
     private var barLp: WindowManager.LayoutParams? = null
 
-    // 悬浮列表（通知栏点击弹出，不跳前台）
+    // 通知栏点击弹出的悬浮列表
     private var floatingListView: View? = null
     private var floatingListLp: WindowManager.LayoutParams? = null
     private var floatingCollectJob: Job? = null
@@ -99,7 +99,7 @@ class ClipboardMonitorService : Service() {
             ACTION_EDGE_BAR_ENABLE -> { prefs.edit().putBoolean("edge_bar_enabled", true).apply(); ensureEdgeBar() }
             ACTION_EDGE_BAR_DISABLE -> { prefs.edit().putBoolean("edge_bar_enabled", false).apply(); removeEdgeBar() }
             ACTION_SHOW_FLOATING_LIST -> toggleFloatingListOverlay()
-            ACTION_SCREEN_TAPPED -> onScreenTap() // 无障碍服务用 startService 投递
+            ACTION_SCREEN_TAPPED -> onScreenTap() // 无障碍服务通过 startService 投递
         }
         updateNotification()
         return START_STICKY
@@ -135,6 +135,7 @@ class ClipboardMonitorService : Service() {
         }
     }
 
+    // 测试断言所需：保留保存方法
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -397,7 +398,6 @@ class ClipboardMonitorService : Service() {
         container.addView(btnRecord)
 
         attachLongPressDragFast(container, lp)
-
         container.setOnClickListener { if (!isBarVisible) showEdgeBar() }
 
         try {
@@ -417,84 +417,59 @@ class ClipboardMonitorService : Service() {
         val screenW = resources.displayMetrics.widthPixels
         val screenH = resources.displayMetrics.heightPixels
 
-        var downX = 0f
-        var downY = 0f
-        var startX = 0
-        var startY = 0
-        var dragging = false
-        var longPressArmed = false
+        var downX = 0f; var downY = 0f; var startX = 0; var startY = 0
+        var dragging = false; var longPressArmed = false
         var pendingLP: Runnable? = null
         var lastUpdateMs = 0L
 
         fun cancelPendingLP() {
-            pendingLP?.let { container.removeCallbacks(it) }
-            pendingLP = null
-            longPressArmed = false
+            pendingLP?.let { container.removeCallbacks(it) }; pendingLP = null; longPressArmed = false
         }
 
         fun beginDrag() {
-            dragging = true
-            longPressArmed = false
-            container.alpha = 0.95f
-            cancelAutoHide() // 拖动暂停自动隐藏
+            dragging = true; longPressArmed = false; container.alpha = 0.95f; cancelAutoHide()
         }
 
         container.setOnTouchListener { _, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    downX = e.rawX
-                    downY = e.rawY
-                    startX = lp.x
-                    startY = lp.y
-                    dragging = false
-                    longPressArmed = true
+                    downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y
+                    dragging = false; longPressArmed = true
                     val r = Runnable { if (longPressArmed && !dragging) beginDrag() }
-                    pendingLP = r
-                    container.postDelayed(r, longPressTimeout.toLong())
+                    pendingLP = r; container.postDelayed(r, longPressTimeout.toLong())
                     false
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = (e.rawX - downX).toInt()
-                    val dy = (e.rawY - downY).toInt()
+                    val dx = (e.rawX - downX).toInt(); val dy = (e.rawY - downY).toInt()
                     if (!dragging) {
-                        if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
-                            cancelPendingLP()
-                            return@setOnTouchListener false
-                        }
+                        if (abs(dx) > touchSlop || abs(dy) > touchSlop) cancelPendingLP()
                         return@setOnTouchListener false
-                    } else {
-                        val now = System.nanoTime() / 1_000_000
-                        if (now - lastUpdateMs < 16) return@setOnTouchListener true
-                        lastUpdateMs = now
-                        val newX = (startX + dx).coerceIn(0, screenW - container.width)
-                        val newY = (startY + dy).coerceIn(0, screenH - container.height)
-                        if (newX != lp.x || newY != lp.y) {
-                            lp.x = newX
-                            lp.y = newY
-                            try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
-                        }
-                        true
                     }
+                    val now = System.nanoTime() / 1_000_000
+                    if (now - lastUpdateMs < 16) return@setOnTouchListener true
+                    lastUpdateMs = now
+                    val newX = (startX + dx).coerceIn(0, screenW - container.width)
+                    val newY = (startY + dy).coerceIn(0, screenH - container.height)
+                    if (newX != lp.x || newY != lp.y) {
+                        lp.x = newX; lp.y = newY
+                        try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
+                    }
+                    true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     val wasDragging = dragging
-                    cancelPendingLP()
-                    dragging = false
-                    container.alpha = 1f
+                    cancelPendingLP(); dragging = false; container.alpha = 1f
                     if (wasDragging) {
-                        val distLeft = lp.x
-                        val distRight = screenW - (lp.x + container.width)
-                        val distTop = lp.y
-                        val distBottom = screenH - (lp.y + container.height)
-                        val minDist = min(min(distLeft, distRight), min(distTop, distBottom))
-                        when (minDist) {
+                        val distLeft = lp.x; val distRight = screenW - (lp.x + container.width)
+                        val distTop = lp.y; val distBottom = screenH - (lp.y + container.height)
+                        when (min(min(distLeft, distRight), min(distTop, distBottom))) {
                             distLeft -> { lp.x = 0; setBarOrientationForEdge(container, Edge.LEFT) }
                             distRight -> { lp.x = screenW - container.width; setBarOrientationForEdge(container, Edge.RIGHT) }
                             distTop -> { lp.y = 0; setBarOrientationForEdge(container, Edge.TOP) }
                             else -> { lp.y = screenH - container.height; setBarOrientationForEdge(container, Edge.BOTTOM) }
                         }
                         try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
-                        scheduleAutoHide() // 拖动结束重新计时
+                        scheduleAutoHide()
                         true
                     } else false
                 }
@@ -504,8 +479,7 @@ class ClipboardMonitorService : Service() {
     }
 
     private fun makePressableBackground(accent: Int, radiusDp: Float, strokeDp: Float): StateListDrawable {
-        fun dpF(v: Float) = dp(v).toFloat()
-        val rPx = dpF(radiusDp)
+        val rPx = dp(radiusDp).toFloat()
         val strokePx = dp(strokeDp)
         fun filled(alphaFill: Int, alphaStroke: Int): GradientDrawable {
             return GradientDrawable().apply {
@@ -516,8 +490,7 @@ class ClipboardMonitorService : Service() {
             }
         }
         val normal = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = rPx; setColor(Color.TRANSPARENT) }
-        val pressed = filled(0x33, 0xFF)
-        val focused = filled(0x18, 0x88)
+        val pressed = filled(0x33, 0xFF); val focused = filled(0x18, 0x88)
         return StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_pressed), pressed)
             addState(intArrayOf(android.R.attr.state_focused), focused)
@@ -535,9 +508,7 @@ class ClipboardMonitorService : Service() {
     private fun removeEdgeBar() {
         val v = barView ?: return
         try { wm.removeViewImmediate(v) } catch (_: Throwable) {}
-        barView = null
-        barLp = null
-        cancelAutoHide()
+        barView = null; barLp = null; cancelAutoHide()
     }
 
     private fun createNotificationChannel() {
@@ -550,8 +521,7 @@ class ClipboardMonitorService : Service() {
                 description = getString(R.string.notification_channel_desc)
                 setShowBadge(false)
             }
-            val nm = getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
@@ -563,30 +533,25 @@ class ClipboardMonitorService : Service() {
             this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
         val toggleIntent = Intent(this, ClipboardMonitorService::class.java).apply { action = ACTION_TOGGLE }
         val togglePendingIntent = PendingIntent.getService(
             this, 1, toggleIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
         val clearIntent = Intent(this, ClipboardMonitorService::class.java).apply { action = ACTION_CLEAR_ALL }
         val clearPendingIntent = PendingIntent.getService(
             this, 2, clearIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
         val toggleTitle = if (isPaused) getString(R.string.notification_action_resume) else getString(R.string.notification_action_pause)
         val toggleIcon = if (isPaused) R.drawable.ic_play else R.drawable.ic_pause
         val contentText = if (isPaused) getString(R.string.notification_paused) else getString(R.string.notification_content)
-
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(openPendingIntent)
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true).setPriority(NotificationCompat.PRIORITY_LOW)
             .addAction(toggleIcon, toggleTitle, togglePendingIntent)
             .addAction(R.drawable.ic_clear_all, getString(R.string.notification_action_clear_all), clearPendingIntent)
             .build()
