@@ -18,6 +18,7 @@ import android.text.TextWatcher
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.view.ViewGroup
 import android.view.accessibility.AccessibilityManager
 import android.widget.EditText
 import android.widget.Toast
@@ -252,7 +253,6 @@ class MainActivity : AppCompatActivity() {
             clipToPadding = false
         }
 
-        // 左滑打开“链接面板”，不删除 item
         val swipe = object : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT) {
             override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder) = false
             override fun onSwiped(vh: RecyclerView.ViewHolder, dir: Int) {
@@ -260,7 +260,7 @@ class MainActivity : AppCompatActivity() {
                 if (pos in 0 until adapter.itemCount) {
                     val item = adapter.currentList[pos]
                     linkOverlay.showForText(item.content)
-                    adapter.notifyItemChanged(pos) // 复位
+                    adapter.notifyItemChanged(pos)
                 }
             }
         }

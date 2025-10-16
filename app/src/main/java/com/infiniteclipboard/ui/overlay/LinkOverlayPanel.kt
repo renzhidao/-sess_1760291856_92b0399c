@@ -8,8 +8,6 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
-import android.widget.ScrollView
-import androidx.annotation.MainThread
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.google.android.material.card.MaterialCardView
@@ -17,9 +15,9 @@ import com.infiniteclipboard.R
 import com.infiniteclipboard.utils.LinkExtractor
 
 class LinkOverlayPanel(
-    private val root: ViewGroup,           // Activity 根容器（任意 ViewGroup）
-    private val blurTarget: View,          // 要被模糊的背景（通常是 RecyclerView 或根布局）
-    private var panelWidthRatio: Float = 0.66f // 面板宽度比例（主界面 0.66，小窗建议 0.9）
+    private val root: ViewGroup,           // 容器
+    private val blurTarget: View,          // 被模糊的背景
+    private var panelWidthRatio: Float = 0.66f
 ) {
 
     private val overlay: View = LayoutInflater.from(root.context)
@@ -30,15 +28,12 @@ class LinkOverlayPanel(
     private val chipGroup: ChipGroup = overlay.findViewById(R.id.chips_links)
     private val btnClose: View = overlay.findViewById(R.id.btn_close)
     private val tvEmpty: View = overlay.findViewById(R.id.tv_empty)
-    private val scrollView: ScrollView = overlay.findViewById(R.id.link_overlay_root).findViewById(R.id.card_panel)
-        .findViewById(R.id.chips_links).parent.parent as ScrollView
 
     var onShowStateChanged: ((showing: Boolean) -> Unit)? = null
 
     init {
         overlay.visibility = View.GONE
         root.addView(overlay)
-        // 点击遮罩关闭
         scrim.setOnClickListener { hide() }
         btnClose.setOnClickListener { hide() }
     }
@@ -49,13 +44,11 @@ class LinkOverlayPanel(
 
     fun isShowing(): Boolean = overlay.visibility == View.VISIBLE
 
-    @MainThread
     fun showForText(text: String?) {
         val links = LinkExtractor.extract(text ?: "")
         show(links)
     }
 
-    @MainThread
     fun show(links: List<String>) {
         preparePanelWidth()
 
@@ -97,13 +90,11 @@ class LinkOverlayPanel(
             }
         }
 
-        // 打开动效
         overlay.visibility = View.VISIBLE
         animateIn()
         onShowStateChanged?.invoke(true)
     }
 
-    @MainThread
     fun hide() {
         if (!isShowing()) return
         animateOut {
@@ -113,7 +104,6 @@ class LinkOverlayPanel(
         }
     }
 
-    // 供外界快速关闭并告知是否处理
     fun hideIfShowing(): Boolean {
         return if (isShowing()) {
             hide(); true
@@ -132,11 +122,8 @@ class LinkOverlayPanel(
     }
 
     private fun animateIn() {
-        // 背景模糊（API 31+）
         applyBlur()
-        // 遮罩淡入
         scrim.animate().alpha(1f).setDuration(180).setInterpolator(DecelerateInterpolator()).start()
-        // 面板滑入
         panel.animate()
             .translationX(0f)
             .setDuration(200)
@@ -153,9 +140,7 @@ class LinkOverlayPanel(
             .withEndAction { end() }
             .start()
 
-        scrim.animate().alpha(0f).setDuration(160).setInterpolator(DecelerateInterpolator()).withEndAction {
-            // 清理在 end() 里
-        }.start()
+        scrim.animate().alpha(0f).setDuration(160).setInterpolator(DecelerateInterpolator()).start()
     }
 
     private fun applyBlur() {
@@ -163,7 +148,7 @@ class LinkOverlayPanel(
             try {
                 val effect = RenderEffect.createBlurEffect(20f, 20f, Shader.TileMode.CLAMP)
                 blurTarget.setRenderEffect(effect)
-            } catch (_: Throwable) { /* 忽略失败，退化为仅遮罩 */ }
+            } catch (_: Throwable) { }
         }
     }
 
