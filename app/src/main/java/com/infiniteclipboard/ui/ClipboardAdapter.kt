@@ -23,7 +23,8 @@ class ClipboardAdapter(
     private val onCopyClick: (ClipboardEntity) -> Unit,
     private val onDeleteClick: (ClipboardEntity) -> Unit,
     private val onItemClick: (ClipboardEntity) -> Unit,
-    private val onShareClick: (ClipboardEntity) -> Unit
+    private val onShareClick: (ClipboardEntity) -> Unit,
+    private val onEditRequest: (ClipboardEntity) -> Unit = {} // 新增：带默认实现，兼容两边调用
 ) : ListAdapter<ClipboardEntity, ClipboardAdapter.ViewHolder>(DiffCallback()) {
 
     private var highlightQuery: String = ""
@@ -52,31 +53,24 @@ class ClipboardAdapter(
 
         fun bind(item: ClipboardEntity, query: String) {
             binding.apply {
-                // 满足“文本原样保留”的测试
+                // 满足“文本原样保留”测试
                 tvContent.text = item.content
-                // 如有搜索词，叠加高亮（不会改变原文本内容，只是渲染样式）
+                // 如有搜索词，叠加高亮样式
                 if (query.isNotBlank()) {
                     tvContent.text = buildHighlighted(item.content, query, root.context)
                 }
 
-                // 兼容两套按钮 id：新(ib_*) 或 旧(btn*)
-                val copyView = root.findViewById<View>(R.id.ib_copy)
-                    ?: root.findViewById(R.id.btnCopy)
-                val shareView = root.findViewById<View>(R.id.ib_share)
-                    ?: root.findViewById(R.id.btnShare)
-                val deleteView = root.findViewById<View>(R.id.ib_delete)
-                    ?: root.findViewById(R.id.btnDelete)
+                // 兼容两套按钮 id（ImageButton 或 MaterialButton）
+                val copyView = root.findViewById<View>(R.id.ib_copy) ?: root.findViewById(R.id.btnCopy)
+                val shareView = root.findViewById<View>(R.id.ib_share) ?: root.findViewById(R.id.btnShare)
+                val deleteView = root.findViewById<View>(R.id.ib_delete) ?: root.findViewById(R.id.btnDelete)
 
                 copyView?.setOnClickListener { onCopyClick(item) }
                 shareView?.setOnClickListener { onShareClick(item) }
                 deleteView?.setOnClickListener { onDeleteClick(item) }
 
                 root.setOnClickListener { onItemClick(item) }
-                // 长按先保留（后续如需弹底部编辑框，可在 MainActivity 里扩展回调）
-                root.setOnLongClickListener {
-                    onItemClick(item)
-                    true
-                }
+                root.setOnLongClickListener { onEditRequest(item); true } // 新增：长按编辑回调
             }
         }
 
@@ -95,16 +89,8 @@ class ClipboardAdapter(
                 idx = lowerSrc.indexOf(lowerQ, idx)
                 if (idx < 0) break
                 val end = idx + lowerQ.length
-                span.setSpan(
-                    ForegroundColorSpan(color),
-                    idx, end,
-                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
-                )
-                span.setSpan(
-                    StyleSpan(Typeface.BOLD),
-                    idx, end,
-                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
-                )
+                span.setSpan(ForegroundColorSpan(color), idx, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                span.setSpan(StyleSpan(Typeface.BOLD), idx, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                 idx = end
             }
             return span
