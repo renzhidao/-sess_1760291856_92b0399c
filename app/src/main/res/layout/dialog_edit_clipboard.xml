@@ -1,5 +1,5 @@
-<!-- 文件: app/src/main/res/layout/dialog_edit_clipboard.xml -->
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 文件: app/src/main/res/layout/dialog_edit_clipboard.xml -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
