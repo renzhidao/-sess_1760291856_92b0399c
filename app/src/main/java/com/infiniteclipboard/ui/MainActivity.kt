@@ -93,7 +93,7 @@ class MainActivity : AppCompatActivity() {
         LogUtils.init(this)
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
-        // 链接面板：绑定到根容器，模糊目标为列表
+        // 气泡覆盖层：挂到根容器，模糊目标为 RecyclerView（标题栏不模糊）
         linkOverlay = LinkOverlayPanel(binding.root as ViewGroup, binding.recyclerView, 0.66f)
         linkOverlay.onShowStateChanged = { showing -> backCallback.isEnabled = showing }
         onBackPressedDispatcher.addCallback(this, backCallback)
@@ -253,14 +253,16 @@ class MainActivity : AppCompatActivity() {
             clipToPadding = false
         }
 
+        // 轻微左滑即可触发（阈值低且立即复位）
         val swipe = object : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT) {
             override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder) = false
+            override fun getSwipeThreshold(viewHolder: RecyclerView.ViewHolder): Float = 0.1f
             override fun onSwiped(vh: RecyclerView.ViewHolder, dir: Int) {
                 val pos = vh.bindingAdapterPosition
                 if (pos in 0 until adapter.itemCount) {
                     val item = adapter.currentList[pos]
                     linkOverlay.showForText(item.content)
-                    adapter.notifyItemChanged(pos)
+                    adapter.notifyItemChanged(pos) // 复位
                 }
             }
         }
