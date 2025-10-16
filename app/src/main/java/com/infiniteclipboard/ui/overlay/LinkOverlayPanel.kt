@@ -3,7 +3,6 @@ package com.infiniteclipboard.ui.overlay
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.os.Build
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -73,16 +72,7 @@ class LinkOverlayPanel(
             bubbles.addView(item)
         }
 
-        captureAndBlur {
-            overlay.alpha = 0f
-            overlay.visibility = View.VISIBLE
-            overlay.animate()
-                .alpha(1f)
-                .setDuration(180)
-                .setInterpolator(DecelerateInterpolator())
-                .start()
-            onShowStateChanged?.invoke(true)
-        }
+        captureAndShowBlur()
     }
 
     fun hide() {
@@ -93,6 +83,7 @@ class LinkOverlayPanel(
             .withEndAction {
                 overlay.visibility = View.GONE
                 scrim.visibility = View.GONE
+                blurBg.visibility = View.GONE
                 blurBg.setImageDrawable(null)
                 onShowStateChanged?.invoke(false)
             }
@@ -103,32 +94,52 @@ class LinkOverlayPanel(
         return if (isShowing()) { hide(); true } else false
     }
 
-    private fun captureAndBlur(onReady: () -> Unit) {
+    private fun captureAndShowBlur() {
+        overlay.visibility = View.GONE
+        
         blurTarget.post {
-            val bitmap = captureView(blurTarget)
-            if (bitmap != null) {
-                val blurred = BlurUtils.fastBlur(bitmap, 20)
-                blurBg.setImageBitmap(blurred)
-                blurBg.visibility = View.VISIBLE
+            try {
+                val bitmap = captureView(blurTarget)
+                if (bitmap != null) {
+                    val blurred = BlurUtils.fastBlur(bitmap, 22)
+                    blurBg.setImageBitmap(blurred)
+                    blurBg.visibility = View.VISIBLE
+                } else {
+                    blurBg.visibility = View.GONE
+                }
+            } catch (e: Exception) {
+                blurBg.visibility = View.GONE
             }
+            
             scrim.visibility = View.VISIBLE
-            onReady()
+            overlay.alpha = 0f
+            overlay.visibility = View.VISIBLE
+            overlay.animate()
+                .alpha(1f)
+                .setDuration(200)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+            onShowStateChanged?.invoke(true)
         }
     }
 
     private fun captureView(view: View): Bitmap? {
-        val w = view.width
-        val h = view.height
-        if (w <= 0 || h <= 0) return null
-        
-        val scale = 0.25f
-        val sw = (w * scale).toInt().coerceAtLeast(1)
-        val sh = (h * scale).toInt().coerceAtLeast(1)
-        
-        val bitmap = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        canvas.scale(scale, scale)
-        view.draw(canvas)
-        return bitmap
+        try {
+            val w = view.width
+            val h = view.height
+            if (w <= 0 || h <= 0) return null
+            
+            val scale = 0.3f
+            val sw = (w * scale).toInt().coerceAtLeast(1)
+            val sh = (h * scale).toInt().coerceAtLeast(1)
+            
+            val bitmap = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            canvas.scale(scale, scale)
+            view.draw(canvas)
+            return bitmap
+        } catch (e: Exception) {
+            return null
+        }
     }
 }
