@@ -1,9 +1,9 @@
 // 文件: app/src/main/java/com/infiniteclipboard/service/ClipboardAccessibilityService.kt
-// 无障碍服务：仅提供复制/剪切/粘贴能力；不主动拉起前台读取，避免“未输入就跳”。
 package com.infiniteclipboard.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Intent
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -27,13 +27,19 @@ class ClipboardAccessibilityService : AccessibilityService() {
             flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                     AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                     AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            // 🆕 添加点击事件监听
+            eventTypes = eventTypes or AccessibilityEvent.TYPE_VIEW_CLICKED
         }
         instanceRef = WeakReference(this)
         LogUtils.d("AccessibilityService", "辅助服务已启动")
     }
 
-    // 不基于无障碍事件触发任何前台读取
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) { /* no-op */ }
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // 🆕 监听屏幕点击事件，发送广播给 Service
+        if (event?.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            sendBroadcast(Intent(ClipboardMonitorService.ACTION_SCREEN_TAPPED))
+        }
+    }
 
     override fun onInterrupt() {
         LogUtils.d("AccessibilityService", "服务被中断")
@@ -99,7 +105,6 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } else null
         }
 
-        // 复制：有选区→复制选区；无选区→全选后复制；同步系统剪贴板并返回文本
         fun captureCopy(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -118,7 +123,6 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return textToRecord
         }
 
-        // 剪切：失败则用 SET_TEXT 兜底；同步系统剪贴板并返回文本
         fun captureCut(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -148,7 +152,6 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return cutText
         }
 
-        // 粘贴：优先 ACTION_PASTE；失败则直接 SET_TEXT
         fun performPaste(text: String?): Boolean {
             val svc = instanceRef?.get() ?: return false
             val node = focusedEditableNode(svc) ?: return false

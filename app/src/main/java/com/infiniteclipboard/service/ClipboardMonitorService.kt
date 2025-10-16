@@ -6,19 +6,24 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -27,12 +32,15 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
-import com.infiniteclipboard.ui.ClipboardWindowActivity
+import com.infiniteclipboard.ui.ClipboardAdapter
 import com.infiniteclipboard.ui.TapRecordActivity
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collectLatest
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -50,6 +58,25 @@ class ClipboardMonitorService : Service() {
     private var barView: LinearLayout? = null
     private var barLp: WindowManager.LayoutParams? = null
 
+    private var floatingListView: View? = null
+    private var floatingListLp: WindowManager.LayoutParams? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var isBarVisible = true
+    private var hideBarRunnable: Runnable? = null
+    private var lastTapTime = 0L
+    private var tapCount = 0
+    private val TAP_WINDOW_MS = 10_000L
+    private val AUTO_HIDE_DELAY_MS = 10_000L
+
+    private val screenTapReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_SCREEN_TAPPED) {
+                onScreenTap()
+            }
+        }
+    }
+
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         if (!isPaused) handleClipboardChange()
     }
@@ -62,6 +89,12 @@ class ClipboardMonitorService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(screenTapReceiver, IntentFilter(ACTION_SCREEN_TAPPED), RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(screenTapReceiver, IntentFilter(ACTION_SCREEN_TAPPED))
+        }
 
         if (prefs.getBoolean("edge_bar_enabled", false)) ensureEdgeBar() else removeEdgeBar()
 
@@ -78,6 +111,7 @@ class ClipboardMonitorService : Service() {
             ACTION_SHIZUKU_STOP -> ShizukuClipboardMonitor.stop()
             ACTION_EDGE_BAR_ENABLE -> { prefs.edit().putBoolean("edge_bar_enabled", true).apply(); ensureEdgeBar() }
             ACTION_EDGE_BAR_DISABLE -> { prefs.edit().putBoolean("edge_bar_enabled", false).apply(); removeEdgeBar() }
+            ACTION_SHOW_FLOATING_LIST -> toggleFloatingList()
         }
         updateNotification()
         return START_STICKY
@@ -88,9 +122,12 @@ class ClipboardMonitorService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) {}
+        try { unregisterReceiver(screenTapReceiver) } catch (_: Throwable) {}
         removeEdgeBar()
+        removeFloatingList()
         ShizukuClipboardMonitor.stop()
         serviceScope.cancel()
+        mainHandler.removeCallbacksAndMessages(null)
     }
 
     private fun handleClipboardChange() {
@@ -137,6 +174,158 @@ class ClipboardMonitorService : Service() {
     private fun dp(v: Float): Int = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics
     ).toInt()
+
+    private fun toggleFloatingList() {
+        if (floatingListView != null) {
+            removeFloatingList()
+        } else {
+            showFloatingList()
+        }
+    }
+
+    private fun showFloatingList() {
+        if (floatingListView != null) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) return
+
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+
+        val dm = resources.displayMetrics
+        val w = (dm.widthPixels * 0.8f).toInt()
+        val h = (dm.heightPixels * 0.7f).toInt()
+
+        val lp = WindowManager.LayoutParams(
+            w, h, type,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+
+        val container = LayoutInflater.from(this).inflate(
+            R.layout.floating_clipboard_list,
+            null
+        )
+
+        val recyclerView = container.findViewById<RecyclerView>(R.id.recyclerView)
+        val btnClose = container.findViewById<View>(R.id.btnClose)
+
+        val adapter = ClipboardAdapter(
+            onCopyClick = { item ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("clipboard", item.content))
+            },
+            onDeleteClick = { item ->
+                serviceScope.launch { repository.deleteItem(item) }
+            },
+            onItemClick = { item ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("clipboard", item.content))
+                removeFloatingList()
+            },
+            onShareClick = { item ->
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, item.content)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(Intent.createChooser(intent, "分享").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        )
+
+        recyclerView.layoutManager = LinearLayoutManager(this)
+        recyclerView.adapter = adapter
+
+        serviceScope.launch {
+            repository.allItems.collectLatest { items ->
+                adapter.submitList(items)
+            }
+        }
+
+        btnClose.setOnClickListener { removeFloatingList() }
+        container.setOnClickListener { removeFloatingList() }
+        recyclerView.setOnClickListener { }
+
+        try {
+            wm.addView(container, lp)
+            floatingListView = container
+            floatingListLp = lp
+        } catch (t: Throwable) {
+            LogUtils.e("ClipboardService", "显示悬浮列表失败", t)
+        }
+    }
+
+    private fun removeFloatingList() {
+        val v = floatingListView ?: return
+        try { wm.removeViewImmediate(v) } catch (_: Throwable) {}
+        floatingListView = null
+        floatingListLp = null
+    }
+
+    private fun onScreenTap() {
+        val now = System.currentTimeMillis()
+        
+        if (now - lastTapTime > TAP_WINDOW_MS) {
+            tapCount = 1
+            lastTapTime = now
+        } else {
+            tapCount++
+            if (tapCount >= 2 && !isBarVisible) {
+                showEdgeBar()
+                tapCount = 0
+            }
+        }
+        
+        if (isBarVisible) {
+            scheduleAutoHide()
+        }
+    }
+
+    private fun showEdgeBar() {
+        val bar = barView ?: return
+        if (isBarVisible) return
+        
+        bar.visibility = View.VISIBLE
+        bar.animate()
+            .alpha(1f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(200)
+            .start()
+        isBarVisible = true
+        scheduleAutoHide()
+    }
+
+    private fun hideEdgeBar() {
+        val bar = barView ?: return
+        if (!isBarVisible) return
+        
+        bar.animate()
+            .alpha(0.3f)
+            .scaleX(0.3f)
+            .scaleY(0.3f)
+            .setDuration(200)
+            .withEndAction {
+                bar.visibility = View.VISIBLE
+            }
+            .start()
+        isBarVisible = false
+        cancelAutoHide()
+    }
+
+    private fun scheduleAutoHide() {
+        cancelAutoHide()
+        hideBarRunnable = Runnable { hideEdgeBar() }
+        mainHandler.postDelayed(hideBarRunnable!!, AUTO_HIDE_DELAY_MS)
+    }
+
+    private fun cancelAutoHide() {
+        hideBarRunnable?.let { mainHandler.removeCallbacks(it) }
+        hideBarRunnable = null
+    }
 
     private fun ensureEdgeBar() {
         if (barView != null) return
@@ -190,7 +379,10 @@ class ClipboardMonitorService : Service() {
                     marginStart = dp(6f)
                     marginEnd = dp(6f)
                 }
-                setOnClickListener { onClick() }
+                setOnClickListener {
+                    onClick()
+                    scheduleAutoHide()
+                }
             }
         }
 
@@ -211,33 +403,25 @@ class ClipboardMonitorService : Service() {
                 ClipboardAccessibilityService.performPaste(null)
             }
         }
-        val btnRecord = makeTextBtn("记录") {
-            try {
-                val it = Intent(this, TapRecordActivity::class.java).apply {
-                    addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
-                                Intent.FLAG_ACTIVITY_NO_ANIMATION or
-                                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
-                    )
-                }
-                startActivity(it)
-            } catch (t: Throwable) {
-                LogUtils.e("ClipboardService", "拉起瞬时前台读取失败", t)
-            }
-        }
 
         container.addView(btnCopy)
         container.addView(btnCut)
         container.addView(btnPaste)
-        container.addView(btnRecord)
 
         attachLongPressDragFast(container, lp)
+
+        container.setOnClickListener {
+            if (!isBarVisible) {
+                showEdgeBar()
+            }
+        }
 
         try {
             wm.addView(container, lp)
             barView = container
             barLp = lp
+            
+            scheduleAutoHide()
         } catch (t: Throwable) {
             LogUtils.e("ClipboardService", "添加边缘小条失败", t)
         }
@@ -268,9 +452,7 @@ class ClipboardMonitorService : Service() {
             dragging = true
             longPressArmed = false
             container.alpha = 0.95f
-            container.parent?.let {
-                (container.parent as? View)?.parent?.requestDisallowInterceptTouchEvent(true)
-            }
+            cancelAutoHide()
         }
 
         container.setOnTouchListener { _, e ->
@@ -286,6 +468,7 @@ class ClipboardMonitorService : Service() {
                     val r = Runnable { if (longPressArmed && !dragging) beginDrag() }
                     pendingLP = r
                     container.postDelayed(r, longPressTimeout.toLong())
+                    
                     false
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -298,8 +481,8 @@ class ClipboardMonitorService : Service() {
                         }
                         return@setOnTouchListener false
                     } else {
-                        val now = System.nanoTime() / 1_000_000 // ms
-                        if (now - lastUpdateMs < 16) return@setOnTouchListener true // ~60fps throttle
+                        val now = System.nanoTime() / 1_000_000
+                        if (now - lastUpdateMs < 16) return@setOnTouchListener true
                         lastUpdateMs = now
 
                         val newX = (startX + dx).coerceIn(0, screenW - container.width)
@@ -330,6 +513,8 @@ class ClipboardMonitorService : Service() {
                             else -> { lp.y = screenH - container.height; setBarOrientationForEdge(container, Edge.BOTTOM) }
                         }
                         try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
+                        
+                        scheduleAutoHide()
                         true
                     } else false
                 }
@@ -372,6 +557,7 @@ class ClipboardMonitorService : Service() {
         try { wm.removeViewImmediate(v) } catch (_: Throwable) {}
         barView = null
         barLp = null
+        cancelAutoHide()
     }
 
     private fun createNotificationChannel() {
@@ -390,10 +576,10 @@ class ClipboardMonitorService : Service() {
     }
 
     private fun createNotification(): Notification {
-        val openIntent = Intent(this, ClipboardWindowActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        val openIntent = Intent(this, ClipboardMonitorService::class.java).apply {
+            action = ACTION_SHOW_FLOATING_LIST
         }
-        val openPendingIntent = PendingIntent.getActivity(
+        val openPendingIntent = PendingIntent.getService(
             this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -440,6 +626,8 @@ class ClipboardMonitorService : Service() {
         const val ACTION_SHIZUKU_STOP = "com.infiniteclipboard.action.SHIZUKU_STOP"
         const val ACTION_EDGE_BAR_ENABLE = "com.infiniteclipboard.action.EDGE_BAR_ENABLE"
         const val ACTION_EDGE_BAR_DISABLE = "com.infiniteclipboard.action.EDGE_BAR_DISABLE"
+        const val ACTION_SHOW_FLOATING_LIST = "com.infiniteclipboard.action.SHOW_FLOATING_LIST"
+        const val ACTION_SCREEN_TAPPED = "com.infiniteclipboard.SCREEN_TAPPED"
 
         fun start(context: Context) {
             val intent = Intent(context, ClipboardMonitorService::class.java)
