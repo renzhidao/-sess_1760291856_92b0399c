@@ -99,7 +99,7 @@ class ClipboardMonitorService : Service() {
             ACTION_EDGE_BAR_ENABLE -> { prefs.edit().putBoolean("edge_bar_enabled", true).apply(); ensureEdgeBar() }
             ACTION_EDGE_BAR_DISABLE -> { prefs.edit().putBoolean("edge_bar_enabled", false).apply(); removeEdgeBar() }
             ACTION_SHOW_FLOATING_LIST -> toggleFloatingListOverlay()
-            ACTION_SCREEN_TAPPED -> onScreenTap() // 无障碍服务通过 startService 通知
+            ACTION_SCREEN_TAPPED -> onScreenTap() // 无障碍服务用 startService 投递
         }
         updateNotification()
         return START_STICKY
@@ -135,7 +135,6 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 测试需要：实现内容保存方法
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -610,7 +609,6 @@ class ClipboardMonitorService : Service() {
         const val ACTION_SHOW_FLOATING_LIST = "com.infiniteclipboard.action.SHOW_FLOATING_LIST"
         const val ACTION_SCREEN_TAPPED = "com.infiniteclipboard.SCREEN_TAPPED"
 
-        // 恢复 start/stop，修复 MainActivity 未解析错误
         fun start(context: Context) {
             val intent = Intent(context, ClipboardMonitorService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

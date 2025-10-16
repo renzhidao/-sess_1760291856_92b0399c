@@ -34,7 +34,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
         LogUtils.d("AccessibilityService", "辅助服务已启动")
     }
 
-    // 不再发广播，直接启动 Service 发送 ACTION_SCREEN_TAPPED，避免 registerReceiver 重载冲突
+    // 不再发广播，直接启动 Service 发送 ACTION_SCREEN_TAPPED
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
             try {
@@ -162,7 +162,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
         }
 
         fun performPaste(text: String?): Boolean {
-            val svc = instanceRef?.get() ?: return false
+            val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return false
             return try {
                 if (!text.isNullOrEmpty()) ClipboardUtils.setClipboardText(svc, text)
