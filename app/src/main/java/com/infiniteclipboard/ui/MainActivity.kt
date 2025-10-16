@@ -89,7 +89,7 @@ class MainActivity : AppCompatActivity() {
 
         ShizukuClipboardMonitor.init(this)
         ClipboardMonitorService.start(this)
-        
+
         requestStoragePermissionAndRestore()
     }
 
@@ -201,9 +201,10 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
                     startActivity(intent)
-                    Toast.makeText(this, "请授予"在其他应用上层显示"权限后再开启", Toast.LENGTH_LONG).show()
+                    // 修复字符串中的未转义引号
+                    Toast.makeText(this, "请授予“在其他应用上层显示”权限后再开启", Toast.LENGTH_LONG).show()
                 } catch (_: Throwable) {
-                    Toast.makeText(this, "无法打开悬浮窗���限设置", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "无法打开悬浮窗权限设置", Toast.LENGTH_LONG).show()
                 }
                 return
             }
