@@ -13,12 +13,6 @@ import com.google.android.flexbox.FlexboxLayout
 import com.infiniteclipboard.R
 import com.infiniteclipboard.utils.LinkExtractor
 
-/**
- * 气泡样式的链接覆盖层：
- * - 原界面保持不动但虚化
- * - 气泡悬浮在半透明遮罩之上
- * - 左侧瀑布流，自适应宽度
- */
 class LinkOverlayPanel(
     private val root: ViewGroup,
     private val blurTarget: View,
@@ -28,12 +22,13 @@ class LinkOverlayPanel(
         .inflate(R.layout.view_link_bubbles_overlay, root, false)
 
     private val bubbles: FlexboxLayout = overlay.findViewById(R.id.bubbles_container)
+    private val scrim: View = overlay.findViewById(R.id.scrim)
 
     var onShowStateChanged: ((Boolean) -> Unit)? = null
 
     init {
         overlay.visibility = View.GONE
-        overlay.setOnClickListener { hide() }
+        overlay.setOnClickListener { hide() } // 点击空白关闭
         root.addView(overlay)
     }
 
@@ -66,7 +61,8 @@ class LinkOverlayPanel(
             }
             tv.setOnLongClickListener {
                 try {
-                    val cm = root.context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val cm = root.context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
                     cm.setPrimaryClip(android.content.ClipData.newPlainText("link", url))
                 } catch (_: Throwable) {}
                 true
@@ -74,18 +70,16 @@ class LinkOverlayPanel(
             bubbles.addView(item)
         }
 
-        // 先虚化背景
-        applyBlur()
-        
-        // 再显示遮罩和气泡
+        applyBlur() // 原位毛玻璃
+        scrim.visibility = View.VISIBLE
+
         overlay.alpha = 0f
         overlay.visibility = View.VISIBLE
         overlay.animate()
             .alpha(1f)
-            .setDuration(200)
+            .setDuration(180)
             .setInterpolator(DecelerateInterpolator())
             .start()
-        
         onShowStateChanged?.invoke(true)
     }
 
@@ -93,10 +87,11 @@ class LinkOverlayPanel(
         if (!isShowing()) return
         overlay.animate()
             .alpha(0f)
-            .setDuration(150)
+            .setDuration(140)
             .withEndAction {
                 overlay.visibility = View.GONE
                 clearBlur()
+                scrim.visibility = View.GONE
                 onShowStateChanged?.invoke(false)
             }
             .start()
@@ -109,7 +104,7 @@ class LinkOverlayPanel(
     private fun applyBlur() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
-                val effect = RenderEffect.createBlurEffect(25f, 25f, Shader.TileMode.CLAMP)
+                val effect = RenderEffect.createBlurEffect(24f, 24f, Shader.TileMode.CLAMP)
                 blurTarget.setRenderEffect(effect)
             } catch (_: Throwable) { }
         }
