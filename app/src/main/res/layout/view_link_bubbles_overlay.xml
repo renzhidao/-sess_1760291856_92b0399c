@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 文件: app/src/main/res/layout/view_link_bubbles_overlay.xml -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/link_bubbles_overlay_root"
@@ -10,7 +9,6 @@
     android:background="@android:color/transparent"
     android:visibility="gone">
 
-    <!-- 轻微遮罩（不要整屏黑） -->
     <View
         android:id="@+id/scrim"
         android:layout_width="match_parent"
@@ -18,18 +16,19 @@
         android:background="#14000000"
         android:visibility="gone" />
 
-    <!-- 左上角瀑布流，从上往下排 -->
     <com.google.android.flexbox.FlexboxLayout
         android:id="@+id/bubbles_container"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="start|top"
+        android:background="@android:color/transparent"
         android:paddingStart="12dp"
         android:paddingTop="12dp"
         android:paddingEnd="12dp"
         android:paddingBottom="12dp"
         android:clipToPadding="false"
         app:flexWrap="wrap"
+        app:flexDirection="column"
         app:justifyContent="flex_start"
         app:alignItems="flex_start"
         app:alignContent="flex_start" />
