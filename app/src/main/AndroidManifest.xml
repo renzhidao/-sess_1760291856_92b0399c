@@ -3,13 +3,10 @@
     xmlns:tools="http://schemas.android.com/tools"
     package="com.infiniteclipboard">
 
-    <!-- 基本权限 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-
-    <!-- 外部存储（按你要求保留，不改路径时需要） -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
@@ -71,7 +68,6 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- Shizuku 用户服务 -->
         <service
             android:name=".service.ClipboardUserService"
             android:enabled="true"
@@ -86,6 +82,12 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- 新增：通知点击接收器（不导出） -->
+        <receiver
+            android:name=".service.NotificationClickReceiver"
+            android:enabled="true"
+            android:exported="false" />
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
