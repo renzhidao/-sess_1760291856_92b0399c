@@ -12,6 +12,7 @@ import android.view.View
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.ItemTouchHelper
@@ -22,6 +23,7 @@ import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.data.ClipboardEntity
 import com.infiniteclipboard.databinding.ActivityClipboardWindowBinding
+import com.infiniteclipboard.ui.overlay.LinkOverlayPanel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -32,6 +34,13 @@ class ClipboardWindowActivity : AppCompatActivity() {
     private lateinit var clipboardManager: ClipboardManager
     private val repository by lazy { (application as ClipboardApplication).repository }
 
+    private lateinit var linkOverlay: LinkOverlayPanel
+    private val backCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            if (linkOverlay.hideIfShowing()) return
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityClipboardWindowBinding.inflate(layoutInflater)
@@ -41,9 +50,14 @@ class ClipboardWindowActivity : AppCompatActivity() {
         val w = (dm.widthPixels * 0.8f).toInt()
         val h = (dm.heightPixels * 0.8f).toInt()
         window.setLayout(w, h)
-        window.setGravity(Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+        window.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL)
 
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+
+        // 小窗里面板更窄：0.9 占比
+        linkOverlay = LinkOverlayPanel(binding.root as ViewGroup, binding.recyclerView, 0.9f)
+        linkOverlay.onShowStateChanged = { showing -> backCallback.isEnabled = showing }
+        onBackPressedDispatcher.addCallback(this, backCallback)
 
         setupRecyclerView()
         setupCloseButton()
@@ -81,7 +95,7 @@ class ClipboardWindowActivity : AppCompatActivity() {
                 val pos = vh.bindingAdapterPosition
                 if (pos in 0 until adapter.itemCount) {
                     val item = adapter.currentList[pos]
-                    adapter.toggleLinksForId(item.id)
+                    linkOverlay.showForText(item.content)
                     adapter.notifyItemChanged(pos)
                 }
             }

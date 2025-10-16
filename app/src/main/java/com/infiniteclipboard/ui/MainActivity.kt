@@ -21,6 +21,7 @@ import android.view.View
 import android.view.accessibility.AccessibilityManager
 import android.widget.EditText
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -38,6 +39,7 @@ import com.infiniteclipboard.databinding.ActivityMainBinding
 import com.infiniteclipboard.service.ClipboardAccessibilityService
 import com.infiniteclipboard.service.ClipboardMonitorService
 import com.infiniteclipboard.service.ShizukuClipboardMonitor
+import com.infiniteclipboard.ui.overlay.LinkOverlayPanel
 import com.infiniteclipboard.ui.LogViewerActivity
 import com.infiniteclipboard.utils.AutoBackupManager
 import com.infiniteclipboard.utils.LogUtils
@@ -55,6 +57,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var clipboardManager: ClipboardManager
     private val repository by lazy { (application as ClipboardApplication).repository }
     private val prefs by lazy { getSharedPreferences("settings", Context.MODE_PRIVATE) }
+
+    private lateinit var linkOverlay: LinkOverlayPanel
+    private val backCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            if (linkOverlay.hideIfShowing()) return
+        }
+    }
 
     private val createDoc = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -83,6 +92,11 @@ class MainActivity : AppCompatActivity() {
         LogUtils.init(this)
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
+        // 链接面板：绑定到根容器，模糊目标为列表
+        linkOverlay = LinkOverlayPanel(binding.root as ViewGroup, binding.recyclerView, 0.66f)
+        linkOverlay.onShowStateChanged = { showing -> backCallback.isEnabled = showing }
+        onBackPressedDispatcher.addCallback(this, backCallback)
+
         setupRecyclerView()
         setupSearchView()
         setupButtons()
@@ -91,7 +105,7 @@ class MainActivity : AppCompatActivity() {
 
         ShizukuClipboardMonitor.init(this)
         ClipboardMonitorService.start(this)
-        
+
         requestStoragePermissionAndRestore()
     }
 
@@ -237,15 +251,16 @@ class MainActivity : AppCompatActivity() {
             setPadding(pad, 0, pad, pad)
             clipToPadding = false
         }
-        
+
+        // 左滑打开“链接面板”，不删除 item
         val swipe = object : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT) {
             override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder) = false
             override fun onSwiped(vh: RecyclerView.ViewHolder, dir: Int) {
                 val pos = vh.bindingAdapterPosition
                 if (pos in 0 until adapter.itemCount) {
                     val item = adapter.currentList[pos]
-                    adapter.toggleLinksForId(item.id)
-                    adapter.notifyItemChanged(pos)
+                    linkOverlay.showForText(item.content)
+                    adapter.notifyItemChanged(pos) // 复位
                 }
             }
         }
@@ -446,9 +461,7 @@ class MainActivity : AppCompatActivity() {
             .setView(view)
             .create()
 
-        view.findViewById<View>(R.id.btnClear).setOnClickListener {
-            et.setText("")
-        }
+        view.findViewById<View>(R.id.btnClear).setOnClickListener { et.setText("") }
         view.findViewById<View>(R.id.btnCopy).setOnClickListener {
             val text = et.text?.toString().orEmpty()
             if (text.isNotEmpty()) copyToClipboard(text)

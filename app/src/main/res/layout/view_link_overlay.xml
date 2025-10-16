@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 文件: app/src/main/res/layout/view_link_overlay.xml -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/link_overlay_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:clickable="false"
+    android:focusable="false"
+    android:visibility="gone">
+
+    <!-- 背景遮罩（老系统也能用的半透明层），点击关闭 -->
+    <View
+        android:id="@+id/view_scrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#1A000000"
+        android:alpha="0"
+        android:clickable="true"
+        android:focusable="true" />
+
+    <!-- 左侧滑出的白色面板（宽度在代码里按比例设置），先摆在左边屏外 -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/card_panel"
+        android:layout_width="320dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:translationX="-320dp"
+        android:clickable="true"
+        android:focusable="true"
+        android:padding="12dp"
+        android:radius="12dp"
+        android:elevation="8dp"
+        android:backgroundTint="@android:color/white">
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <!-- 顶部栏（标题 + 关闭按钮） -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingTop="4dp"
+                    android:paddingBottom="8dp">
+
+                    <TextView
+                        android:id="@+id/tv_title"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="链接速览"
+                        android:textStyle="bold"
+                        android:textColor="#222222"
+                        android:textSize="16sp" />
+
+                    <TextView
+                        android:id="@+id/btn_close"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:padding="8dp"
+                        android:text="关闭"
+                        android:textColor="#1976D2"
+                        android:textSize="14sp" />
+                </LinearLayout>
+
+                <!-- 瀑布/流式布局：ChipGroup 支持自动换行 -->
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/chips_links"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:isSingleLine="false"
+                    android:chipSpacingHorizontal="8dp"
+                    android:chipSpacingVertical="8dp"
+                    android:paddingBottom="12dp" />
+
+                <!-- 空状态 -->
+                <TextView
+                    android:id="@+id/tv_empty"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="未提取到任何链接"
+                    android:textColor="#666666"
+                    android:textSize="14sp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="12dp"
+                    android:visibility="gone" />
+
+            </LinearLayout>
+        </ScrollView>
+    </com.google.android.material.card.MaterialCardView>
+</FrameLayout>
