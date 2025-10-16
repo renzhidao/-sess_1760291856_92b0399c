@@ -14,6 +14,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -73,6 +74,19 @@ class ClipboardWindowActivity : AppCompatActivity() {
                 override fun onChildViewDetachedFromWindow(view: View) {}
             })
         }
+
+        val swipe = object : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT) {
+            override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder) = false
+            override fun onSwiped(vh: RecyclerView.ViewHolder, dir: Int) {
+                val pos = vh.bindingAdapterPosition
+                if (pos in 0 until adapter.itemCount) {
+                    val item = adapter.currentList[pos]
+                    adapter.toggleLinksForId(item.id)
+                    adapter.notifyItemChanged(pos)
+                }
+            }
+        }
+        ItemTouchHelper(swipe).attachToRecyclerView(binding.recyclerView)
     }
 
     private fun setupCloseButton() {
@@ -131,7 +145,10 @@ class ClipboardWindowActivity : AppCompatActivity() {
         }
         view.findViewById<View>(R.id.btnSave).setOnClickListener {
             val text = et.text?.toString().orEmpty()
-            lifecycleScope.launch { repository.updateItemContent(item, text) }
+            lifecycleScope.launch {
+                repository.deleteItem(item)
+                if (text.isNotEmpty()) repository.insertItem(text)
+            }
             dialog.dismiss()
         }
 

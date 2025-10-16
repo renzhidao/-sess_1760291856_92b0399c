@@ -4,27 +4,18 @@ package com.infiniteclipboard.utils
 import java.util.regex.Pattern
 
 object LinkExtractor {
-
     private val URL_PATTERN = Pattern.compile(
-        "(?i)\\b(?:https?://|www\\.)[-A-Za-z0-9+&@#/%?=~_|!:,.;]*[-A-Za-z0-9+&@#/%=~_|]"
+        "(?i)\\b(?:(?:https?|ftp)://|www\\.)[\\w\\-+&@#/%?=~|!:,.;]*[\\w\\-+&@#/%=~|]"
     )
 
-    fun extractLinks(text: String): List<String> {
-        val links = mutableListOf<String>()
-        val matcher = URL_PATTERN.matcher(text)
-        while (matcher.find()) {
-            var url = matcher.group()
-            if (url.startsWith("www.", ignoreCase = true)) {
-                url = "http://$url"
-            }
-            if (!links.contains(url)) {
-                links.add(url)
-            }
+    fun extract(text: String): List<String> {
+        val links = LinkedHashSet<String>()
+        val m = URL_PATTERN.matcher(text)
+        while (m.find()) {
+            var url = m.group()
+            if (url.startsWith("www.", true)) url = "http://$url"
+            links.add(url)
         }
-        return links
-    }
-
-    fun hasLinks(text: String): Boolean {
-        return URL_PATTERN.matcher(text).find()
+        return links.toList()
     }
 }

@@ -27,7 +27,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
@@ -89,7 +91,7 @@ class MainActivity : AppCompatActivity() {
 
         ShizukuClipboardMonitor.init(this)
         ClipboardMonitorService.start(this)
-
+        
         requestStoragePermissionAndRestore()
     }
 
@@ -201,7 +203,6 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
                     startActivity(intent)
-                    // 修复字符串中的未转义引号
                     Toast.makeText(this, "请授予“在其他应用上层显示”权限后再开启", Toast.LENGTH_LONG).show()
                 } catch (_: Throwable) {
                     Toast.makeText(this, "无法打开悬浮窗权限设置", Toast.LENGTH_LONG).show()
@@ -236,6 +237,19 @@ class MainActivity : AppCompatActivity() {
             setPadding(pad, 0, pad, pad)
             clipToPadding = false
         }
+        
+        val swipe = object : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT) {
+            override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder) = false
+            override fun onSwiped(vh: RecyclerView.ViewHolder, dir: Int) {
+                val pos = vh.bindingAdapterPosition
+                if (pos in 0 until adapter.itemCount) {
+                    val item = adapter.currentList[pos]
+                    adapter.toggleLinksForId(item.id)
+                    adapter.notifyItemChanged(pos)
+                }
+            }
+        }
+        ItemTouchHelper(swipe).attachToRecyclerView(binding.recyclerView)
     }
 
     private fun setupSearchView() {
