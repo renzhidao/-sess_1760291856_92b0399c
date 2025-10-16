@@ -9,7 +9,6 @@
     android:focusable="false"
     android:visibility="gone">
 
-    <!-- 背景遮罩（老系统也能用的半透明层），点击关闭 -->
     <View
         android:id="@+id/view_scrim"
         android:layout_width="match_parent"
@@ -19,7 +18,6 @@
         android:clickable="true"
         android:focusable="true" />
 
-    <!-- 左侧滑出的白色面板（宽度在代码里按比例设置），先摆在左边屏外 -->
     <com.google.android.material.card.MaterialCardView
         android:id="@+id/card_panel"
         android:layout_width="320dp"
@@ -43,7 +41,6 @@
                 android:layout_height="wrap_content"
                 android:orientation="vertical">
 
-                <!-- 顶部栏（标题 + 关闭按钮） -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -72,7 +69,7 @@
                         android:textSize="14sp" />
                 </LinearLayout>
 
-                <!-- 瀑布/流式布局：ChipGroup 自动换行（使用 app: 前缀） -->
+                <!-- 关键修复：使用 app: 前缀 -->
                 <com.google.android.material.chip.ChipGroup
                     android:id="@+id/chips_links"
                     android:layout_width="match_parent"
@@ -82,7 +79,6 @@
                     app:chipSpacingVertical="8dp"
                     android:paddingBottom="12dp" />
 
-                <!-- 空状态 -->
                 <TextView
                     android:id="@+id/tv_empty"
                     android:layout_width="match_parent"

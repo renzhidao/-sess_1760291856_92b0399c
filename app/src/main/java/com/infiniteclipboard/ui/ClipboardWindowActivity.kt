@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
@@ -50,11 +51,11 @@ class ClipboardWindowActivity : AppCompatActivity() {
         val w = (dm.widthPixels * 0.8f).toInt()
         val h = (dm.heightPixels * 0.8f).toInt()
         window.setLayout(w, h)
-        window.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL)
+        // 关键修复：Kotlin 使用 or，而不是 |
+        window.setGravity(Gravity.TOP or Gravity.CENTER_HORIZONTAL)
 
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
-        // 小窗里面板更窄：0.9 占比
         linkOverlay = LinkOverlayPanel(binding.root as ViewGroup, binding.recyclerView, 0.9f)
         linkOverlay.onShowStateChanged = { showing -> backCallback.isEnabled = showing }
         onBackPressedDispatcher.addCallback(this, backCallback)
