@@ -99,7 +99,7 @@ class ClipboardMonitorService : Service() {
             ACTION_EDGE_BAR_ENABLE -> { prefs.edit().putBoolean("edge_bar_enabled", true).apply(); ensureEdgeBar() }
             ACTION_EDGE_BAR_DISABLE -> { prefs.edit().putBoolean("edge_bar_enabled", false).apply(); removeEdgeBar() }
             ACTION_SHOW_FLOATING_LIST -> toggleFloatingListOverlay()
-            ACTION_SCREEN_TAPPED -> onScreenTap() // 无障碍服务通过 startService 投递
+            ACTION_SCREEN_TAPPED -> onScreenTap()
         }
         updateNotification()
         return START_STICKY
@@ -135,7 +135,7 @@ class ClipboardMonitorService : Service() {
         }
     }
 
-    // 测试断言所需：保留保存方法
+    // 测试用：保留此方法
     private fun saveClipboardContent(content: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -163,8 +163,7 @@ class ClipboardMonitorService : Service() {
         TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics
     ).toInt()
 
-    // =============== 悬浮列表：通知栏点击显示（不拉前台） ===============
-
+    // 悬浮列表（通知栏点击显示，不拉前台）
     private fun toggleFloatingListOverlay() {
         if (floatingListView == null) showFloatingListOverlay() else removeFloatingListOverlay()
     }
@@ -173,7 +172,7 @@ class ClipboardMonitorService : Service() {
         if (floatingListView != null) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) return
 
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
@@ -183,7 +182,7 @@ class ClipboardMonitorService : Service() {
         val h = (dm.heightPixels * 0.7f).toInt()
 
         val lp = WindowManager.LayoutParams(
-            w, h, type,
+            w, h, overlayType,
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
@@ -251,8 +250,7 @@ class ClipboardMonitorService : Service() {
         floatingListLp = null
     }
 
-    // =============== 边缘小条：10 秒自动隐藏 + 双击唤醒 ===============
-
+    // 边缘小条：10 秒自动隐藏 + 双击唤醒
     private fun onScreenTap() {
         val now = System.currentTimeMillis()
         if (now - lastTapTime > TAP_WINDOW_MS) {
@@ -284,7 +282,7 @@ class ClipboardMonitorService : Service() {
         bar.animate()
             .alpha(0.3f).scaleX(0.3f).scaleY(0.3f)
             .setDuration(180)
-            .withEndAction { bar.visibility = View.VISIBLE } // 保留“可点小点”
+            .withEndAction { bar.visibility = View.VISIBLE }
             .start()
         isBarVisible = false
         cancelAutoHide()
@@ -301,13 +299,12 @@ class ClipboardMonitorService : Service() {
         hideBarRunnable = null
     }
 
-    // =============== 边缘小条：创建/拖动 ===============
-
+    // 创建/拖动边缘小条
     private fun ensureEdgeBar() {
         if (barView != null) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) return
 
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
@@ -315,7 +312,7 @@ class ClipboardMonitorService : Service() {
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            type,
+            overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT

@@ -34,7 +34,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
         LogUtils.d("AccessibilityService", "辅助服务已启动")
     }
 
-    // 用 startService 投递点击事件到前台服务（避免广播/重载冲突）
+    // 用 startService 投递点击事件到服务（不走广播）
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
             try {
@@ -114,7 +114,6 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } else null
         }
 
-        // 复制
         fun captureCopy(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -133,7 +132,6 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return textToRecord
         }
 
-        // 剪切
         fun captureCut(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -163,14 +161,12 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return cutText
         }
 
-        // 粘贴（修复：明确返回布尔，避免“null 作为非空 Boolean”）
+        // 粘贴：始终返回 Boolean，避免“null 作为非空 Boolean”编译错误
         fun performPaste(text: String?): Boolean {
             val svc = instanceRef?.get() ?: return false
             val node = focusedEditableNode(svc) ?: return false
             return try {
-                // 先尝试直接粘贴
                 var ok = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
-                // 失败时用指定文本兜底
                 if (!ok && !text.isNullOrEmpty()) {
                     ClipboardUtils.setClipboardText(svc, text)
                     ok = setText(node, text)
