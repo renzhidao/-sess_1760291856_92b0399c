@@ -51,7 +51,6 @@ class ClipboardWindowActivity : AppCompatActivity() {
         val w = (dm.widthPixels * 0.8f).toInt()
         val h = (dm.heightPixels * 0.8f).toInt()
         window.setLayout(w, h)
-        // 关键修复：Kotlin 使用 or，而不是 |
         window.setGravity(Gravity.TOP or Gravity.CENTER_HORIZONTAL)
 
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -134,10 +133,20 @@ class ClipboardWindowActivity : AppCompatActivity() {
         lifecycleScope.launch { repository.deleteItem(item) }
     }
 
+    // 编辑弹窗：优化 EditText 大文本滑动流畅度
     private fun showEditDialog(item: ClipboardEntity) {
         val view = layoutInflater.inflate(R.layout.dialog_edit_clipboard, null)
         val et = view.findViewById<EditText>(R.id.etContent)
         et.setText(item.content)
+
+        // 平滑滚动优化：不让父容器拦截 + 硬件层 + 显示滚动条
+        et.setOnTouchListener { v, _ ->
+            v.parent?.requestDisallowInterceptTouchEvent(true)
+            false
+        }
+        et.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        et.isVerticalScrollBarEnabled = true
+        et.overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
 
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle("编辑内容")

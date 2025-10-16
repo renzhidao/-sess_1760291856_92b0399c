@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -93,7 +94,6 @@ class MainActivity : AppCompatActivity() {
         LogUtils.init(this)
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
-        // 气泡覆盖层：挂到根容器，模糊目标为 RecyclerView（标题栏不模糊）
         linkOverlay = LinkOverlayPanel(binding.root as ViewGroup, binding.recyclerView, 0.66f)
         linkOverlay.onShowStateChanged = { showing -> backCallback.isEnabled = showing }
         onBackPressedDispatcher.addCallback(this, backCallback)
@@ -142,7 +142,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestStoragePermissionAndRestore() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ 需要“全部文件访问”以写入公共 Documents
+            if (!Environment.isExternalStorageManager()) {
+                try {
+                    val i = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(i)
+                    Toast.makeText(this, "请授予“全部文件访问”后返回应用以启用自动备份", Toast.LENGTH_LONG).show()
+                } catch (_: Throwable) {
+                    try { startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) } catch (_: Throwable) {}
+                }
+            } else {
+                restoreBackupIfNeeded()
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (ContextCompat.checkSelfPermission(
                     this, Manifest.permission.WRITE_EXTERNAL_STORAGE
                 ) != PackageManager.PERMISSION_GRANTED
@@ -182,6 +197,16 @@ class MainActivity : AppCompatActivity() {
     private fun autoBackup() {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
+                // 未授权直接跳过，避免 EACCES 刷屏
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    if (!Environment.isExternalStorageManager()) return@launch
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    if (ContextCompat.checkSelfPermission(
+                            this@MainActivity,
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                        ) != PackageManager.PERMISSION_GRANTED
+                    ) return@launch
+                }
                 val items = repository.getAllOnce()
                 AutoBackupManager.saveBackup(items)
             } catch (e: Exception) {
@@ -253,7 +278,6 @@ class MainActivity : AppCompatActivity() {
             clipToPadding = false
         }
 
-        // 轻微左滑即可触发（阈值低且立即复位）
         val swipe = object : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT) {
             override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder) = false
             override fun getSwipeThreshold(viewHolder: RecyclerView.ViewHolder): Float = 0.1f
@@ -262,7 +286,7 @@ class MainActivity : AppCompatActivity() {
                 if (pos in 0 until adapter.itemCount) {
                     val item = adapter.currentList[pos]
                     linkOverlay.showForText(item.content)
-                    adapter.notifyItemChanged(pos) // 复位
+                    adapter.notifyItemChanged(pos)
                 }
             }
         }
@@ -453,10 +477,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // 编辑弹窗：优化 EditText 大文本滑动流畅度
     private fun showEditDialog(item: ClipboardEntity) {
         val view = layoutInflater.inflate(R.layout.dialog_edit_clipboard, null)
         val et = view.findViewById<EditText>(R.id.etContent)
         et.setText(item.content)
+
+        // 平滑滚动优化：不让父容器拦截 + 硬件层 + 显示滚动条
+        et.setOnTouchListener { v, _ ->
+            v.parent?.requestDisallowInterceptTouchEvent(true)
+            false
+        }
+        et.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        et.isVerticalScrollBarEnabled = true
+        et.overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
 
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle("编辑内容")

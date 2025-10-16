@@ -1,7 +1,6 @@
 // 文件: app/src/main/java/com/infiniteclipboard/utils/AutoBackupManager.kt
 package com.infiniteclipboard.utils
 
-import android.content.Context
 import android.os.Environment
 import com.infiniteclipboard.data.ClipboardEntity
 import kotlinx.coroutines.Dispatchers
@@ -12,7 +11,8 @@ import java.io.File
 
 object AutoBackupManager {
 
-    private const val BACKUP_DIR_NAME = "InfiniteClipboard"
+    // 改为中文目录名，保留公共 Documents 路径
+    private const val BACKUP_DIR_NAME = "无限剪切板"
     private const val BACKUP_FILE_NAME = "clipboard_data.json"
 
     private fun getBackupDir(): File? {

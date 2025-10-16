@@ -1,12 +1,18 @@
-<?xml version="1.0" encoding="utf-8"?>
 <!-- 文件: app/src/main/AndroidManifest.xml -->
+<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     package="com.infiniteclipboard">
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- 存储权限（保持公共 Documents 路径需要） -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
 
     <application
         android:name=".ClipboardApplication"
@@ -65,7 +71,7 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- 关键修复：Shizuku 用户服务必须对外导出，供 Shizuku（另一应用）跨进程启动/绑定 -->
+        <!-- Shizuku 用户服务 -->
         <service
             android:name=".service.ClipboardUserService"
             android:enabled="true"
@@ -81,13 +87,11 @@
             </intent-filter>
         </receiver>
 
-        <!-- 保持 provider 可见；不要给它或 UserService 额外加 android:permission -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
             android:multiprocess="false"
             android:enabled="true"
             android:exported="true" />
-
     </application>
 </manifest>
