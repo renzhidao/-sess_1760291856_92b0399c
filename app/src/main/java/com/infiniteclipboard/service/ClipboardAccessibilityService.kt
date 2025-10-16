@@ -27,15 +27,15 @@ class ClipboardAccessibilityService : AccessibilityService() {
             flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                     AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                     AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-            // 🆕 添加点击事件监听
+            // 监听点击事件，用于边缘小条双击唤醒
             eventTypes = eventTypes or AccessibilityEvent.TYPE_VIEW_CLICKED
         }
         instanceRef = WeakReference(this)
         LogUtils.d("AccessibilityService", "辅助服务已启动")
     }
 
+    // 转发“全局点击”到前台服务（仅用于边缘小条双击唤醒，不触发读取）
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // 🆕 监听屏幕点击事件，发送广播给 Service
         if (event?.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
             sendBroadcast(Intent(ClipboardMonitorService.ACTION_SCREEN_TAPPED))
         }
@@ -105,6 +105,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             } else null
         }
 
+        // 复制
         fun captureCopy(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -123,6 +124,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return textToRecord
         }
 
+        // 剪切
         fun captureCut(): String? {
             val svc = instanceRef?.get() ?: return null
             val node = focusedEditableNode(svc) ?: return null
@@ -152,6 +154,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             return cutText
         }
 
+        // 粘贴
         fun performPaste(text: String?): Boolean {
             val svc = instanceRef?.get() ?: return false
             val node = focusedEditableNode(svc) ?: return false

@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -58,9 +59,12 @@ class ClipboardMonitorService : Service() {
     private var barView: LinearLayout? = null
     private var barLp: WindowManager.LayoutParams? = null
 
+    // 悬浮列表（通知栏点击弹出，不跳前台）
     private var floatingListView: View? = null
     private var floatingListLp: WindowManager.LayoutParams? = null
+    private var floatingCollectJob: Job? = null
 
+    // 边缘小条自动隐藏/双击唤醒
     private val mainHandler = Handler(Looper.getMainLooper())
     private var isBarVisible = true
     private var hideBarRunnable: Runnable? = null
@@ -69,6 +73,7 @@ class ClipboardMonitorService : Service() {
     private val TAP_WINDOW_MS = 10_000L
     private val AUTO_HIDE_DELAY_MS = 10_000L
 
+    // 全局点击广播（由无障碍服务转发）
     private val screenTapReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_SCREEN_TAPPED) {
@@ -90,10 +95,19 @@ class ClipboardMonitorService : Service() {
         startForeground(NOTIFICATION_ID, createNotification())
         clipboardManager.addPrimaryClipChangedListener(clipboardListener)
 
+        // 注册全局点击接收器（API 33+ 使用 flags 版本）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(screenTapReceiver, IntentFilter(ACTION_SCREEN_TAPPED), RECEIVER_NOT_EXPORTED)
+            registerReceiver(
+                screenTapReceiver,
+                IntentFilter(ACTION_SCREEN_TAPPED),
+                Context.RECEIVER_NOT_EXPORTED
+            )
         } else {
-            registerReceiver(screenTapReceiver, IntentFilter(ACTION_SCREEN_TAPPED))
+            @Suppress("DEPRECATION")
+            registerReceiver(
+                screenTapReceiver,
+                IntentFilter(ACTION_SCREEN_TAPPED)
+            )
         }
 
         if (prefs.getBoolean("edge_bar_enabled", false)) ensureEdgeBar() else removeEdgeBar()
@@ -111,7 +125,7 @@ class ClipboardMonitorService : Service() {
             ACTION_SHIZUKU_STOP -> ShizukuClipboardMonitor.stop()
             ACTION_EDGE_BAR_ENABLE -> { prefs.edit().putBoolean("edge_bar_enabled", true).apply(); ensureEdgeBar() }
             ACTION_EDGE_BAR_DISABLE -> { prefs.edit().putBoolean("edge_bar_enabled", false).apply(); removeEdgeBar() }
-            ACTION_SHOW_FLOATING_LIST -> toggleFloatingList()
+            ACTION_SHOW_FLOATING_LIST -> toggleFloatingListOverlay()
         }
         updateNotification()
         return START_STICKY
@@ -124,7 +138,7 @@ class ClipboardMonitorService : Service() {
         try { clipboardManager.removePrimaryClipChangedListener(clipboardListener) } catch (_: Throwable) {}
         try { unregisterReceiver(screenTapReceiver) } catch (_: Throwable) {}
         removeEdgeBar()
-        removeFloatingList()
+        removeFloatingListOverlay()
         ShizukuClipboardMonitor.stop()
         serviceScope.cancel()
         mainHandler.removeCallbacksAndMessages(null)
@@ -138,6 +152,7 @@ class ClipboardMonitorService : Service() {
 
             val enableShizuku = prefs.getBoolean("shizuku_enabled", false)
             if (!enableShizuku) {
+                // 旧逻辑保留：需要前台读取时，启动透明 Activity（这和“通知栏点击”无关）
                 val it = Intent(this, TapRecordActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 }
@@ -175,15 +190,17 @@ class ClipboardMonitorService : Service() {
         TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics
     ).toInt()
 
-    private fun toggleFloatingList() {
-        if (floatingListView != null) {
-            removeFloatingList()
+    // ================= 悬浮列表：通知栏点击时显示 =================
+
+    private fun toggleFloatingListOverlay() {
+        if (floatingListView == null) {
+            showFloatingListOverlay()
         } else {
-            showFloatingList()
+            removeFloatingListOverlay()
         }
     }
 
-    private fun showFloatingList() {
+    private fun showFloatingListOverlay() {
         if (floatingListView != null) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) return
 
@@ -205,8 +222,9 @@ class ClipboardMonitorService : Service() {
             gravity = Gravity.CENTER
         }
 
+        // 直接复用 activity_clipboard_window 布局（无需新建布局文件）
         val container = LayoutInflater.from(this).inflate(
-            R.layout.floating_clipboard_list,
+            R.layout.activity_clipboard_window,
             null
         )
 
@@ -216,15 +234,15 @@ class ClipboardMonitorService : Service() {
         val adapter = ClipboardAdapter(
             onCopyClick = { item ->
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("clipboard", item.content))
+                cm.setPrimaryClip(ClipData.newPlainText("clipboard", item.content))
             },
             onDeleteClick = { item ->
                 serviceScope.launch { repository.deleteItem(item) }
             },
             onItemClick = { item ->
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("clipboard", item.content))
-                removeFloatingList()
+                cm.setPrimaryClip(ClipData.newPlainText("clipboard", item.content))
+                removeFloatingListOverlay()
             },
             onShareClick = { item ->
                 val intent = Intent(Intent.ACTION_SEND).apply {
@@ -232,22 +250,23 @@ class ClipboardMonitorService : Service() {
                     putExtra(Intent.EXTRA_TEXT, item.content)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                startActivity(Intent.createChooser(intent, "分享").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                startActivity(Intent.createChooser(intent, getString(R.string.share)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
         )
 
         recyclerView.layoutManager = LinearLayoutManager(this)
         recyclerView.adapter = adapter
 
-        serviceScope.launch {
+        floatingCollectJob?.cancel()
+        floatingCollectJob = serviceScope.launch {
             repository.allItems.collectLatest { items ->
                 adapter.submitList(items)
             }
         }
 
-        btnClose.setOnClickListener { removeFloatingList() }
-        container.setOnClickListener { removeFloatingList() }
-        recyclerView.setOnClickListener { }
+        btnClose.setOnClickListener { removeFloatingListOverlay() }
+        container.setOnClickListener { removeFloatingListOverlay() }
+        recyclerView.setOnClickListener { /* eat */ }
 
         try {
             wm.addView(container, lp)
@@ -255,20 +274,26 @@ class ClipboardMonitorService : Service() {
             floatingListLp = lp
         } catch (t: Throwable) {
             LogUtils.e("ClipboardService", "显示悬浮列表失败", t)
+            floatingCollectJob?.cancel()
+            floatingCollectJob = null
         }
     }
 
-    private fun removeFloatingList() {
+    private fun removeFloatingListOverlay() {
+        floatingCollectJob?.cancel()
+        floatingCollectJob = null
         val v = floatingListView ?: return
         try { wm.removeViewImmediate(v) } catch (_: Throwable) {}
         floatingListView = null
         floatingListLp = null
     }
 
+    // ================= 边缘小条：10 秒自动隐藏 + 双击唤醒 =================
+
     private fun onScreenTap() {
         val now = System.currentTimeMillis()
-        
         if (now - lastTapTime > TAP_WINDOW_MS) {
+            // 开启新的 10 秒窗口
             tapCount = 1
             lastTapTime = now
         } else {
@@ -278,7 +303,6 @@ class ClipboardMonitorService : Service() {
                 tapCount = 0
             }
         }
-        
         if (isBarVisible) {
             scheduleAutoHide()
         }
@@ -287,14 +311,11 @@ class ClipboardMonitorService : Service() {
     private fun showEdgeBar() {
         val bar = barView ?: return
         if (isBarVisible) return
-        
         bar.visibility = View.VISIBLE
-        bar.animate()
-            .alpha(1f)
-            .scaleX(1f)
-            .scaleY(1f)
-            .setDuration(200)
-            .start()
+        bar.alpha = 0.3f
+        bar.scaleX = 0.3f
+        bar.scaleY = 0.3f
+        bar.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180).start()
         isBarVisible = true
         scheduleAutoHide()
     }
@@ -302,13 +323,13 @@ class ClipboardMonitorService : Service() {
     private fun hideEdgeBar() {
         val bar = barView ?: return
         if (!isBarVisible) return
-        
         bar.animate()
             .alpha(0.3f)
             .scaleX(0.3f)
             .scaleY(0.3f)
-            .setDuration(200)
+            .setDuration(180)
             .withEndAction {
+                // 保持一个“缩小的点”可见，方便你点它；如果要彻底 GONE，可改成：bar.visibility = View.GONE
                 bar.visibility = View.VISIBLE
             }
             .start()
@@ -326,6 +347,8 @@ class ClipboardMonitorService : Service() {
         hideBarRunnable?.let { mainHandler.removeCallbacks(it) }
         hideBarRunnable = null
     }
+
+    // ================= 边缘小条：创建/拖动 =================
 
     private fun ensureEdgeBar() {
         if (barView != null) return
@@ -381,7 +404,7 @@ class ClipboardMonitorService : Service() {
                 }
                 setOnClickListener {
                     onClick()
-                    scheduleAutoHide()
+                    scheduleAutoHide() // 点击后重新计时
                 }
             }
         }
@@ -403,24 +426,41 @@ class ClipboardMonitorService : Service() {
                 ClipboardAccessibilityService.performPaste(null)
             }
         }
+        val btnRecord = makeTextBtn("记录") {
+            try {
+                val it = Intent(this, TapRecordActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                                Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                    )
+                }
+                startActivity(it)
+            } catch (t: Throwable) {
+                LogUtils.e("ClipboardService", "拉起瞬时前台读取失败", t)
+            }
+        }
 
         container.addView(btnCopy)
         container.addView(btnCut)
         container.addView(btnPaste)
+        container.addView(btnRecord)
 
         attachLongPressDragFast(container, lp)
 
+        // 点击小条本体也能“唤醒”显示
         container.setOnClickListener {
-            if (!isBarVisible) {
-                showEdgeBar()
-            }
+            if (!isBarVisible) showEdgeBar()
         }
 
         try {
             wm.addView(container, lp)
             barView = container
             barLp = lp
-            
+
+            // 初始 10 秒后自动隐藏
+            isBarVisible = true
             scheduleAutoHide()
         } catch (t: Throwable) {
             LogUtils.e("ClipboardService", "添加边缘小条失败", t)
@@ -452,7 +492,7 @@ class ClipboardMonitorService : Service() {
             dragging = true
             longPressArmed = false
             container.alpha = 0.95f
-            cancelAutoHide()
+            cancelAutoHide() // 拖动时暂停自动隐藏
         }
 
         container.setOnTouchListener { _, e ->
@@ -468,7 +508,7 @@ class ClipboardMonitorService : Service() {
                     val r = Runnable { if (longPressArmed && !dragging) beginDrag() }
                     pendingLP = r
                     container.postDelayed(r, longPressTimeout.toLong())
-                    
+
                     false
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -513,7 +553,7 @@ class ClipboardMonitorService : Service() {
                             else -> { lp.y = screenH - container.height; setBarOrientationForEdge(container, Edge.BOTTOM) }
                         }
                         try { wm.updateViewLayout(container, lp) } catch (_: Throwable) {}
-                        
+                        // 拖动结束重新开始计时
                         scheduleAutoHide()
                         true
                     } else false
@@ -576,6 +616,7 @@ class ClipboardMonitorService : Service() {
     }
 
     private fun createNotification(): Notification {
+        // 点击通知：让 Service 自己显示悬浮列表（不启动 Activity）
         val openIntent = Intent(this, ClipboardMonitorService::class.java).apply {
             action = ACTION_SHOW_FLOATING_LIST
         }
