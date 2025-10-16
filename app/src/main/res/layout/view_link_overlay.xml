@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 文件: app/src/main/res/layout/view_link_overlay.xml -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/link_overlay_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -28,9 +29,9 @@
         android:clickable="true"
         android:focusable="true"
         android:padding="12dp"
-        android:radius="12dp"
-        android:elevation="8dp"
-        android:backgroundTint="@android:color/white">
+        app:cardCornerRadius="12dp"
+        app:cardElevation="8dp"
+        app:cardBackgroundColor="@android:color/white">
 
         <ScrollView
             android:layout_width="match_parent"
@@ -71,14 +72,14 @@
                         android:textSize="14sp" />
                 </LinearLayout>
 
-                <!-- 瀑布/流式布局：ChipGroup 支持自动换行 -->
+                <!-- 瀑布/流式布局：ChipGroup 自动换行（使用 app: 前缀） -->
                 <com.google.android.material.chip.ChipGroup
                     android:id="@+id/chips_links"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:isSingleLine="false"
-                    android:chipSpacingHorizontal="8dp"
-                    android:chipSpacingVertical="8dp"
+                    app:singleLine="false"
+                    app:chipSpacingHorizontal="8dp"
+                    app:chipSpacingVertical="8dp"
                     android:paddingBottom="12dp" />
 
                 <!-- 空状态 -->
