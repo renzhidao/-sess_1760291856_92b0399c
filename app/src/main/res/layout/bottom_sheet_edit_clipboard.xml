@@ -1,63 +1,69 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 文件: app/src/main/res/layout/bottom_sheet_edit_clipboard.xml -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:orientation="vertical"
-    android:padding="16dp"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content">
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp">
 
     <EditText
         android:id="@+id/etContent"
         android:layout_width="match_parent"
-        android:layout_height="120dp"
+        android:layout_height="280dp"
         android:gravity="top|start"
-        android:hint="编辑剪切板内容"
         android:inputType="textMultiLine"
-        android:maxLines="6"
-        android:background="@android:color/transparent"
-        android:textSize="15sp" />
+        android:scrollbars="vertical"
+        android:autoLink="web"
+        android:linksClickable="true"
+        android:background="@android:drawable/edit_text"
+        android:padding="12dp"
+        android:textSize="14sp" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
         android:orientation="horizontal"
-        android:gravity="end"
-        android:layout_marginTop="12dp">
+        android:weightSum="5">
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnClear"
             style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
+            android:layout_weight="1"
             android:text="清空" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnCopy"
             style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="@string/copy" />
+            android:layout_weight="1"
+            android:text="复制" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnShare"
             style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="@string/share" />
+            android:layout_weight="1"
+            android:text="分享" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnDelete"
             style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="@string/delete" />
+            android:layout_weight="1"
+            android:text="删除" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnSave"
-            style="@style/Widget.Material3.Button.OutlinedButton"
-            android:layout_width="wrap_content"
+            style="@style/Widget.Material3.Button"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="@string/confirm"
-            android:layout_marginStart="8dp" />
+            android:layout_weight="1"
+            android:text="保存" />
     </LinearLayout>
 </LinearLayout>

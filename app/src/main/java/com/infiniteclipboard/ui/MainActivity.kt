@@ -18,7 +18,7 @@ import android.text.TextWatcher
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
-import android.view.accessibility.AccessibilityManager
+import android:view.accessibility.AccessibilityManager
 import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -37,6 +37,7 @@ import com.infiniteclipboard.service.ClipboardAccessibilityService
 import com.infiniteclipboard.service.ClipboardMonitorService
 import com.infiniteclipboard.service.ShizukuClipboardMonitor
 import com.infiniteclipboard.ui.LogViewerActivity
+import com.infiniteclipboard.utils.AutoBackupManager
 import com.infiniteclipboard.utils.LogUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
@@ -61,6 +62,16 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.OpenDocument()
     ) { uri -> if (uri != null) importFromUri(uri) }
 
+    private val storagePermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            restoreBackupIfNeeded()
+        } else {
+            Toast.makeText(this, "需要存储权限才能自动备份恢复", Toast.LENGTH_LONG).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -78,11 +89,18 @@ class MainActivity : AppCompatActivity() {
 
         ShizukuClipboardMonitor.init(this)
         ClipboardMonitorService.start(this)
+        
+        requestStoragePermissionAndRestore()
     }
 
     override fun onResume() {
         super.onResume()
         ensureForegroundClipboardCapture()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        autoBackup()
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -104,6 +122,55 @@ class MainActivity : AppCompatActivity() {
         R.id.action_shizuku_toggle -> { toggleShizuku(); true }
         R.id.action_edge_bar_toggle -> { toggleEdgeBar(); true }
         else -> super.onOptionsItemSelected(item)
+    }
+
+    private fun requestStoragePermissionAndRestore() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (ContextCompat.checkSelfPermission(
+                    this, Manifest.permission.WRITE_EXTERNAL_STORAGE
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            } else {
+                restoreBackupIfNeeded()
+            }
+        } else {
+            restoreBackupIfNeeded()
+        }
+    }
+
+    private fun restoreBackupIfNeeded() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val currentItems = repository.getAllOnce()
+                if (currentItems.isEmpty()) {
+                    val backupItems = AutoBackupManager.loadBackup()
+                    if (!backupItems.isNullOrEmpty()) {
+                        repository.importItems(backupItems)
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "已恢复 ${backupItems.size} 条记录",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                LogUtils.e("MainActivity", "恢复备份失败", e)
+            }
+        }
+    }
+
+    private fun autoBackup() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val items = repository.getAllOnce()
+                AutoBackupManager.saveBackup(items)
+            } catch (e: Exception) {
+                LogUtils.e("MainActivity", "自动备份失败", e)
+            }
+        }
     }
 
     private fun toggleShizuku() {
@@ -134,7 +201,7 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
                     startActivity(intent)
-                    Toast.makeText(this, "请授予“在其他应用上层显示”权限后再开启", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "请授予"在其他应用上层显示"权限后再开启", Toast.LENGTH_LONG).show()
                 } catch (_: Throwable) {
                     Toast.makeText(this, "无法打开悬浮窗权限设置", Toast.LENGTH_LONG).show()
                 }
@@ -159,7 +226,7 @@ class MainActivity : AppCompatActivity() {
             onDeleteClick = { item -> deleteItem(item) },
             onItemClick = { item -> copyToClipboard(item.content) },
             onShareClick = { item -> shareText(item.content) },
-            onEditRequest = { item -> showEditCenterDialog(item) } // 长按弹出“居中编辑器”
+            onEditRequest = { item -> showEditDialog(item) }
         )
         binding.recyclerView.apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
@@ -354,8 +421,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // 新增：居中弹窗编辑器（替代底部弹出）
-    private fun showEditCenterDialog(item: ClipboardEntity) {
+    private fun showEditDialog(item: ClipboardEntity) {
         val view = layoutInflater.inflate(R.layout.dialog_edit_clipboard, null)
         val et = view.findViewById<EditText>(R.id.etContent)
         et.setText(item.content)
@@ -363,7 +429,6 @@ class MainActivity : AppCompatActivity() {
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle("编辑内容")
             .setView(view)
-            .setCancelable(true)
             .create()
 
         view.findViewById<View>(R.id.btnClear).setOnClickListener {
@@ -385,7 +450,6 @@ class MainActivity : AppCompatActivity() {
         view.findViewById<View>(R.id.btnSave).setOnClickListener {
             val text = et.text?.toString().orEmpty()
             lifecycleScope.launch {
-                // 简洁做法：删除原记录，再插入新文本（避免引入更新 API）
                 repository.deleteItem(item)
                 if (text.isNotEmpty()) repository.insertItem(text)
             }

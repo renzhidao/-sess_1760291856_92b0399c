@@ -16,7 +16,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.infiniteclipboard.ClipboardApplication
 import com.infiniteclipboard.R
 import com.infiniteclipboard.data.ClipboardEntity
@@ -58,7 +58,7 @@ class ClipboardWindowActivity : AppCompatActivity() {
                 finish()
             },
             onShareClick = { item -> shareText(item.content) },
-            onEditRequest = { item -> showEditBottomSheet(item) }
+            onEditRequest = { item -> showEditDialog(item) }
         )
         binding.recyclerView.apply {
             layoutManager = LinearLayoutManager(this@ClipboardWindowActivity)
@@ -105,11 +105,15 @@ class ClipboardWindowActivity : AppCompatActivity() {
         lifecycleScope.launch { repository.deleteItem(item) }
     }
 
-    private fun showEditBottomSheet(item: ClipboardEntity) {
-        val dialog = BottomSheetDialog(this)
-        val view = layoutInflater.inflate(R.layout.bottom_sheet_edit_clipboard, null)
+    private fun showEditDialog(item: ClipboardEntity) {
+        val view = layoutInflater.inflate(R.layout.dialog_edit_clipboard, null)
         val et = view.findViewById<EditText>(R.id.etContent)
         et.setText(item.content)
+
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle("编辑内容")
+            .setView(view)
+            .create()
 
         view.findViewById<View>(R.id.btnClear).setOnClickListener { et.setText("") }
         view.findViewById<View>(R.id.btnCopy).setOnClickListener {
@@ -131,7 +135,6 @@ class ClipboardWindowActivity : AppCompatActivity() {
             dialog.dismiss()
         }
 
-        dialog.setContentView(view)
         dialog.show()
     }
 
